@@ -10,10 +10,6 @@ venv/
 .cache/
 
 
-# Untested deployment config. Kept locally; excluded until the image is
-# actually built and run against the current dependency set.
-Dockerfile
-
 # macOS
 .DS_Store
 

@@ -1,17 +1,19 @@
-# Precompute preset animations and station scores, then copy them to R2.
+# Precompute the public site's products and publish them to the HF Dataset.
 #
-# DISABLED until hosting is decided: manual runs only. To schedule it, add the
-# `schedule:` block below back under `on:` and set the repository secrets
-# R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET.
+# DISABLED until you choose to publish: manual runs only, and uploads only
+# when the `upload` box is ticked. To schedule it, move the `schedule:` block
+# below under `on:`. Repository settings needed:
+#   secrets   HF_TOKEN (write access to the Dataset), CDS_KEY (maps gallery)
+#   variables PRECOMPUTE_HF_REPO ("user/preddyfast-data")
 #
-# Runs are cheap when there is nothing new: each store is skipped while the
-# manifest already holds its newest finished run. Timing after the ECMWF 00/12
-# UTC runs land in the dynamical.org archive; GitHub may start a scheduled run
-# 5–30 min late, which does not matter at this cadence.
+# Each run first mirrors what the Dataset already holds, so a store whose
+# newest run is already published, a gallery month already drawn, or a run
+# already scored is skipped. The point and CDS caches are kept between runs
+# by actions/cache, so only new runs are read from the archives.
 #
 #  schedule:
-#    - cron: "30 8 * * *"    # 00 UTC runs
-#    - cron: "30 20 * * *"   # 12 UTC runs
+#    - cron: "30 8 * * *"    # after the 00 UTC runs reach the archive
+#    - cron: "30 20 * * *"   # after the 12 UTC runs
 
 name: precompute
 
@@ -19,11 +21,15 @@ on:
   workflow_dispatch:
     inputs:
       scores:
-        description: "Also score the preset stations"
+        description: "Score and draw the evaluation stations"
         type: boolean
-        default: false
+        default: true
+      maps:
+        description: "Draw the ERA5 maps gallery (needs CDS_KEY)"
+        type: boolean
+        default: true
       upload:
-        description: "Copy outputs to R2 (needs the R2_* secrets)"
+        description: "Publish to the HF Dataset (needs HF_TOKEN)"
         type: boolean
         default: false
 
@@ -34,41 +40,31 @@ concurrency:
 jobs:
   precompute:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
+    env:
+      PRECOMPUTE_HF_REPO: ${{ vars.PRECOMPUTE_HF_REPO }}
+      CDS_KEY: ${{ secrets.CDS_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      POINT_CACHE_DIR: .point-cache
+      CDS_CACHE_DIR: .cds-cache
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements.txt boto3
-      # The previous manifest, so unchanged stores are skipped (no-op without R2).
-      - name: Fetch the current manifest
-        if: ${{ inputs.upload }}
-        env:
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: |
-          python - <<'EOF'
-          import os, boto3, botocore
-          s3 = boto3.client("s3", endpoint_url=os.environ["R2_ENDPOINT"], region_name="auto",
-                            aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-                            aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"])
-          os.makedirs(".precomputed", exist_ok=True)
-          try:
-              s3.download_file(os.environ["R2_BUCKET"], "latest.json", ".precomputed/latest.json")
-          except botocore.exceptions.ClientError:
-              print("no manifest yet")
-          EOF
+      - run: pip install -r requirements.txt
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .point-cache
+            .cds-cache
+            .obs-cache
+          key: archive-${{ github.run_id }}
+          restore-keys: archive-
       - name: Precompute
-        env:
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: >
           python scripts/precompute.py
-          ${{ inputs.scores && '--scores' || '' }}
-          ${{ inputs.upload && '--upload' || '' }}
+          ${{ (github.event_name == 'schedule' || inputs.scores) && '--scores' || '' }}
+          ${{ (github.event_name == 'schedule' || inputs.maps) && '--maps' || '' }}
+          ${{ (github.event_name == 'schedule' || inputs.upload) && '--upload-hf' || '' }}
