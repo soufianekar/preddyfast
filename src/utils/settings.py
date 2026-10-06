@@ -823,6 +823,47 @@ MAP_AREA_PRESETS: dict[str, tuple[float, float, float, float]] = REGION_BOXES
 MAP_AREA_PRESET_LABELS: dict[str, str] = REGION_LABELS
 MAP_AREA_GLOBAL_KEY: str = GLOBAL_KEY
 
+# Maps gallery (public site): a fixed set of ERA5 monthly maps for the newest
+# month the dataset serves, retrieved and drawn offline by
+# `scripts/precompute.py --maps` — visitors never queue at Copernicus. Each
+# item is one map; anomalies are against `MAP_GALLERY_REFERENCE`.
+MAP_GALLERY_DATASET: str = "era5_monthly"
+MAP_GALLERY_REFERENCE: str = "1991-2020"
+MAP_GALLERY: dict[str, dict] = {
+    "t2m_anomaly_europe": {
+        "label": "2 m temperature anomaly · Europe",
+        "variable": "2m_temperature",
+        "area": "ecmwf_europe",
+        "anomaly": True,
+    },
+    "t2m_anomaly_global": {
+        "label": "2 m temperature anomaly · Global",
+        "variable": "2m_temperature",
+        "area": GLOBAL_KEY,
+        "anomaly": True,
+    },
+    "tp_anomaly_europe": {
+        "label": "Precipitation anomaly · Europe",
+        "variable": "total_precipitation",
+        "area": "ecmwf_europe",
+        "anomaly": True,
+        "monthly_mode": "per_day",
+    },
+    "tp_anomaly_global": {
+        "label": "Precipitation anomaly · Global",
+        "variable": "total_precipitation",
+        "area": GLOBAL_KEY,
+        "anomaly": True,
+        "monthly_mode": "per_day",
+    },
+    "t2m_europe": {
+        "label": "2 m temperature · Europe",
+        "variable": "2m_temperature",
+        "area": "ecmwf_europe",
+        "anomaly": False,
+    },
+}
+
 # Natural Earth line work, bundled rather than fetched: the map figure draws
 # its own coastlines because a Plotly heatmap lives on cartesian axes and
 # cannot use a `geo` subplot's built-in ones. Built by
@@ -1695,17 +1736,26 @@ GHCNH_BASE_URL: str = os.environ.get(
     "https://www.ncei.noaa.gov/oa/global-historical-climatology-network/hourly",
 )
 OBS_CACHE_DIR: str = os.environ.get("OBS_CACHE_DIR", ".obs-cache")
-# Per-run verification scores (utils/scores_db.py), kept for good.
-SCORES_DIR: str = os.environ.get("SCORES_DIR", ".scores")
-# Open-Meteo daily histories, one Parquet per (model, variable, point), kept for good.
-HISTORY_DIR: str = os.environ.get("HISTORY_DIR", ".history")
 # Precomputed presets (scripts/precompute.py -> utils/precomputed.py). Dark
 # theme only, default palette, 24 h frames to T+360. Wind is 10 m gust: the
 # archive has no 10 m wind speed (AIFS has no gust and is skipped for it).
 PRECOMPUTE_DIR: str = os.environ.get("PRECOMPUTE_DIR", ".precomputed")
-# Where the browser fetches precomputed frames: the app's own route by
-# default; a bucket or CDN address once hosted (same relative paths).
-PRECOMPUTE_URL: str = os.environ.get("PRECOMPUTE_URL", f"{URL_BASE_PATHNAME}precomputed/")
+# Per-run verification scores (utils/scores_db.py), kept for good. Inside the
+# precomputed tree, so one upload and one mirror carry them (utils/hub_sync.py).
+SCORES_DIR: str = os.environ.get("SCORES_DIR", f"{PRECOMPUTE_DIR}/scores")
+# The public Hugging Face Dataset the scheduled job uploads to and the app
+# mirrors metadata from ("user/name"); unset for a purely local run.
+PRECOMPUTE_HF_REPO: str = os.environ.get("PRECOMPUTE_HF_REPO", "")
+# How often (s) the app re-mirrors the Dataset's manifests and scores.
+PRECOMPUTE_SYNC_S: float = float(os.environ.get("PRECOMPUTE_SYNC_S", "900"))
+# Where the browser fetches precomputed images: the Dataset when there is one,
+# else the app's own route (same relative paths).
+PRECOMPUTE_URL: str = os.environ.get(
+    "PRECOMPUTE_URL",
+    f"https://huggingface.co/datasets/{PRECOMPUTE_HF_REPO}/resolve/main/"
+    if PRECOMPUTE_HF_REPO
+    else f"{URL_BASE_PATHNAME}precomputed/",
+)
 PRECOMPUTE_REGIONS: tuple[str, ...] = ("ecmwf_europe", "ecmwf_n_atlantic")
 PRECOMPUTE_STORES: tuple[str, ...] = ("ifs_ens", "aifs_ens", "gefs", "ifs_control", "aifs_single")
 # variable -> accumulation window (h), None for instantaneous fields

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from utils import hub_sync
 from utils.settings import SCORES_DIR
 
 _KEY = ["init_time", "lead_hours"]
@@ -38,6 +39,7 @@ def load_per_run(
     since: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Stored per-run rows, optionally from `since` (init time) on; empty if none."""
+    hub_sync.sync()
     path = _path(reference, store, variable, site)
     if not path.exists():
         return pd.DataFrame(columns=_KEY)

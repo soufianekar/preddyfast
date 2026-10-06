@@ -154,6 +154,17 @@ def _mpl_color(value: str):
     return value
 
 
+def isoline_color(isolines: dict, shading: dict | None, tokens: dict) -> str:
+    """Isolines over shading keep their own colour; on the bare panel they take the ink.
+
+    The Default isobars are black, as drawn on a white chart; on the dark
+    panel black lines would all but vanish.
+    """
+    if shading is None:
+        return tokens["ink"]
+    return isolines.get("color", "k")
+
+
 def _tokens(theme: str) -> dict:
     """Theme colours for a static map; field colours never depend on the theme."""
     return {k: _mpl_color(v) for k, v in THEMES.get(theme, THEMES["dark"]).items()}
@@ -333,7 +344,7 @@ def render_field_map(
                 ilat,
                 ivalues,
                 levels=contour_levels,
-                colors=isolines.get("color", "k"),
+                colors=isoline_color(isolines, shading, t),
                 linewidths=0.8,
                 transform=_PC,
             )

@@ -37,6 +37,7 @@ from utils.earthmover_api import (
     run_calendar,
     store_variables,
 )
+from utils import hub_sync
 from utils.map_products import forecast_animation
 from utils.settings import (
     GRID_STORES,
@@ -208,6 +209,7 @@ def fields_covering(
 
 def load_manifest() -> dict:
     """The manifest, or an empty one."""
+    hub_sync.sync()
     path = _root() / _MANIFEST
     if not path.exists():
         return {"stores": {}}

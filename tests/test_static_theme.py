@@ -46,3 +46,12 @@ def test_index_timeseries_renders_in_both_themes(theme):
                                           "threshold_labels": ("warm", "cold")},
                                   title="t", subtitle="s", footer="f", theme=theme)
     assert _corner(png) == THEMES[theme]["panel"].upper()
+
+
+def test_isolines_on_the_bare_panel_take_the_theme_ink():
+    from utils.static_figures import _tokens, isoline_color
+
+    for theme in ("dark", "light"):
+        t = _tokens(theme)
+        assert isoline_color({"interval": 5.0, "color": "#000000"}, None, t) == t["ink"]
+        assert isoline_color({"interval": 5.0, "color": "#000000"}, {"levels": [0, 1]}, t) == "#000000"
