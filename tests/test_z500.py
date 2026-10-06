@@ -23,12 +23,9 @@ def _app():
     return dash.Dash(__name__, use_pages=True, pages_folder="", suppress_callback_exceptions=True)
 
 
-def test_meteogram_variable_is_hourly_at_synoptic_hours_and_not_on_the_climate_page():
+def test_meteogram_variable_is_hourly_at_synoptic_hours():
     meta = VARIABLES[Z]
     assert meta["synoptic_hours"] == (0, 12) and meta["climate"] is False and meta["unit"] == "m"
-    from pages import dailyclimate
-
-    assert Z not in {o["value"] for o in dailyclimate._VARIABLE_OPTIONS}
 
 
 def test_family_links_meteogram_area_and_era5_names():

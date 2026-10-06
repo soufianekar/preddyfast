@@ -10,14 +10,14 @@ def _app():
     yield app
 
 
-@pytest.mark.parametrize("page", ["dailyclimate", "maps", "meteogram", "regional", "evaluation"])
+@pytest.mark.parametrize("page", ["maps", "meteogram", "regional", "evaluation"])
 def test_layout_builds_with_and_without_query(page):
     module = importlib.import_module(f"pages.{page}")
     assert module.layout() is not None
     assert module.layout(variable="temperature_2m", models="gefs,gfs", run="latest") is not None
 
 
-@pytest.mark.parametrize("page", ["dailyclimate", "maps", "meteogram", "regional", "evaluation"])
+@pytest.mark.parametrize("page", ["maps", "meteogram", "regional", "evaluation"])
 def test_every_callback_takes_its_inputs_and_states(page):
     """A decorator stacked on the wrong function still registers; catch it here."""
     import inspect

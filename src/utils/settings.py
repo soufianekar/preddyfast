@@ -760,7 +760,7 @@ CLIM_COLORS: dict[str, str] = {
     "extreme_cold": "#08306b",
 }
 
-URL_BASE_PATHNAME: str = os.environ.get("URL_BASE_PATHNAME", "/climate/")
+URL_BASE_PATHNAME: str = os.environ.get("URL_BASE_PATHNAME", "/")
 
 HISTORICAL_START_YEAR = 1981
 NOMINATIM_USER_AGENT = os.environ.get("NOMINATIM_USER_AGENT", "climate-dashboard/1.0")

@@ -35,7 +35,9 @@ from utils.settings import DETERMINISTIC_MODELS, ENSEMBLE_MODELS, GRID_STORES, V
 from utils.text import in_sentence
 from utils.url_state import query_choice, query_list
 
-dash.register_page(__name__, path="/meteogram", title="Forecast at a location · asifast")
+dash.register_page(
+    __name__, path="/", redirect_from=["/meteogram"], title="Forecast at a location · preddyfast"
+)
 
 _VARIABLE_OPTIONS = [{"value": k, "label": v["label"]} for k, v in VARIABLES.items()]
 _ALL_SYSTEMS = {**ENSEMBLE_MODELS, **DETERMINISTIC_MODELS}

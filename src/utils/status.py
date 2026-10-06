@@ -23,7 +23,7 @@ import flask
 
 from utils.cache import cache
 
-COOKIE = "asifast_sid"
+COOKIE = "preddyfast_sid"
 DONE_SHOWN_S = 4.0  # a finished entry stays visible this long
 _STALE_S = 300.0  # a running entry not updated for this long is dropped (worker died)
 _TTL_S = 600

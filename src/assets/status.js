@@ -5,7 +5,7 @@
 // polls `<base>status` only while one has been open for a moment — a quick
 // callback never makes the bar flicker. Entries render into #status-bar.
 (function () {
-  const COOKIE = "asifast_sid";
+  const COOKIE = "preddyfast_sid";
   const SHOW_AFTER_MS = 400;
   const POLL_MS = 700;
   let inFlight = 0;

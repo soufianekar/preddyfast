@@ -71,7 +71,7 @@ from utils.settings import (
 from utils.url_state import query_choice
 from utils.variable_family import publish, resolve
 
-dash.register_page(__name__, path="/maps", title="Climate maps & indices · asifast")
+dash.register_page(__name__, path="/maps", title="Climate maps & indices · preddyfast")
 
 # Climate indices are offered as one more "dataset": its variables are the
 # indices, and its controls are the correlation month, reference and target.

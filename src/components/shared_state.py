@@ -26,21 +26,18 @@ _BASE = URL_BASE_PATHNAME.rstrip("/")
 # header link opens its first view.
 _SECTIONS = (
     (
-        "climate",
-        "Climate",
-        (
-            ("nav-climate", "At a location", "/", "daily"),
-            ("nav-maps", "Maps & indices", "/maps", "era5"),
-        ),
-    ),
-    (
         "weather",
         "Weather",
         (
-            ("nav-meteogram", "At a location", "/meteogram", "daily"),
+            ("nav-meteogram", "At a location", "/", "daily"),
             ("nav-regional", "Area average", "/regional", "grid"),
             ("nav-evaluation", "Evaluation", "/evaluation", "grid"),
         ),
+    ),
+    (
+        "climate",
+        "Climate",
+        (("nav-maps", "Maps", "/maps", "era5"),),
     ),
 )
 _VIEWS = tuple(view for _, _, views in _SECTIONS for view in views)
@@ -92,7 +89,7 @@ def nav_rail() -> html.Nav:
     ]
     return html.Nav(
         [
-            dcc.Link("asifast", href=f"{_BASE}/", className="rail-brand"),
+            dcc.Link("preddyfast", href=f"{_BASE}/", className="rail-brand"),
             html.Div(sections, className="rail-sections"),
             html.Div(theme_toggle(), className="rail-foot"),
         ],

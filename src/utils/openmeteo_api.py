@@ -3,21 +3,16 @@
 from __future__ import annotations
 
 import logging
-import os
-from pathlib import Path
 
 import openmeteo_requests
 import pandas as pd
 import requests_cache
 from retry_requests import retry
 
-from utils import status
 from utils.cache import cache
 from utils.climatology import accumulate_over_window, calendar_day
 from utils.settings import (
     DETERMINISTIC_MODELS,
-    HISTORICAL_START_YEAR,
-    HISTORY_DIR,
     VARIABLES,
 )
 
@@ -27,13 +22,7 @@ _cache_session = requests_cache.CachedSession(".cache/openmeteo", expire_after=3
 _retry_session = retry(_cache_session, retries=5, backoff_factor=0.2)
 _client = openmeteo_requests.Client(session=_retry_session)
 
-ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
-# ECMWF IFS at 0.25 deg. Not `ecmwf_ifs04`: that endpoint still accepts the
-# request and still returns the right number of days, but every value is
-# null — so the forecast extension silently drew nothing rather than
-# raising anything the page could report.
-FORECAST_MODEL = "ecmwf_ifs025"
 ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 
 
@@ -57,11 +46,8 @@ def _response_to_frame(response, variable: str) -> pd.DataFrame:
     return df
 
 
-# Free tier: 10,000 weighted calls a day per IP. A 1981→yesterday daily
-# series weighs ~1,190 (one per 14 days), so the history is kept on disk for
-# good and only its tail is re-asked for (see `history_series`).
+# Free tier: 10,000 weighted calls a day per IP.
 _DAILY_CALL_CAP = 10_000
-_REVISION_DAYS = 7  # ERA5T is revised into final ERA5 within days
 _calls_today: dict[str, float] = {}
 
 
@@ -82,129 +68,6 @@ def _count_calls(days: int, n_vars: int = 1) -> None:
 
 def _today() -> pd.Timestamp:
     return pd.Timestamp.now().normalize()
-
-
-def _fetch_daily_range(
-    lat: float, lon: float, variable: str, model: str, start: pd.Timestamp, end: pd.Timestamp
-) -> pd.DataFrame:
-    """One archive request for `[start, end]`; columns date, value."""
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "start_date": f"{pd.Timestamp(start):%Y-%m-%d}",
-        "end_date": f"{pd.Timestamp(end):%Y-%m-%d}",
-        "daily": [variable],
-        "models": model,
-    }
-    responses = _client.weather_api(ARCHIVE_URL, params=params)
-    _count_calls((pd.Timestamp(end) - pd.Timestamp(start)).days + 1)
-    return _response_to_frame(responses[0], variable)[["date", "value"]]
-
-
-def _history_path(lat: float, lon: float, variable: str, model: str) -> Path:
-    # Keyed by the requested point (2 dp), not snapped to the reanalysis grid:
-    # Open-Meteo corrects temperature to the point's own elevation.
-    return Path(HISTORY_DIR) / f"{model}__{variable}__{lat:+.2f}_{lon:+.2f}.parquet"
-
-
-def history_series(lat: float, lon: float, variable: str, model: str) -> pd.DataFrame:
-    """The daily series from `HISTORICAL_START_YEAR` to yesterday, kept on disk.
-
-    The first request for a place fetches everything once (~1,190 weighted
-    calls). Later requests re-ask only from the earlier of the first empty
-    trailing day (the reanalysis lags) and `_REVISION_DAYS` ago — about one
-    call — and at most once a day per file.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: date, value, doy, variable.
-    """
-    path = _history_path(lat, lon, variable, model)
-    yesterday = _today() - pd.Timedelta("1D")
-    start_all = pd.Timestamp(f"{HISTORICAL_START_YEAR}-01-01")
-    if path.exists():
-        stored = pd.read_parquet(path)
-        refreshed = pd.Timestamp(path.stat().st_mtime, unit="s").normalize()  # see `_write`
-        if refreshed >= _today():
-            new = None
-        else:
-            values = stored["value"].to_numpy()
-            filled = stored["date"][~pd.isna(values)]
-            first_gap = filled.max() + pd.Timedelta("1D") if not filled.empty else start_all
-            start = max(start_all, min(first_gap, yesterday - pd.Timedelta(days=_REVISION_DAYS - 1)))
-            new = _fetch_daily_range(lat, lon, variable, model, start, yesterday) if start <= yesterday else None
-        if new is not None:
-            stored = (
-                pd.concat([stored, new], ignore_index=True)
-                .drop_duplicates("date", keep="last")
-                .sort_values("date")
-                .reset_index(drop=True)
-            )
-            _write(path, stored)
-    else:
-        status.report("Fetching the full history once for this place", detail=f"{model}, {variable}")
-        stored = _fetch_daily_range(lat, lon, variable, model, start_all, yesterday)
-        _write(path, stored)
-    df = stored[stored["date"] <= yesterday].reset_index(drop=True)
-    df["doy"] = calendar_day(df["date"])
-    df["variable"] = variable
-    return df
-
-
-def _write(path: Path, frame: pd.DataFrame) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(f".{os.getpid()}.part")
-    frame[["date", "value"]].to_parquet(tmp, index=False)
-    tmp.replace(path)
-    # The file's mtime is its refresh day: `history_series` asks again only
-    # on a later day.
-    day = _today().timestamp()
-    os.utime(path, (day, day))
-
-
-@cache.memoize(timeout=3600)
-def fetch_historical(lat: float, lon: float, variable: str, model: str) -> pd.DataFrame:
-    """Fetch the full historical/reanalysis daily series for one variable.
-
-    Served from the on-disk history (`history_series`): the archive is asked
-    for the whole series once per place, then only for new and revised days.
-
-    Parameters
-    ----------
-    lat, lon : float
-        Coordinates rounded to 2 decimal places by the caller.
-    variable : str
-        Key into `utils.settings.VARIABLES`.
-    model : str
-        Key into `utils.settings.MODELS`.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: date, value, doy, variable.
-    """
-    return history_series(lat, lon, variable, model)
-
-
-@cache.memoize(timeout=3600)
-def fetch_forecast(lat: float, lon: float, variable: str) -> pd.DataFrame:
-    """Fetch the 10-day ECMWF-IFS forecast extension for the current year.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns: date, value, doy, variable.
-    """
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "daily": [variable],
-        "forecast_days": 10,
-        "models": FORECAST_MODEL,
-    }
-    responses = _client.weather_api(FORECAST_URL, params=params)
-    return _response_to_frame(responses[0], variable)
 
 
 @cache.memoize(timeout=1800)

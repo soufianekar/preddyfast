@@ -41,7 +41,7 @@ from utils.settings import (
 )
 from utils.url_state import query_choice, query_list
 
-dash.register_page(__name__, path="/evaluation", title="Forecast evaluation · asifast")
+dash.register_page(__name__, path="/evaluation", title="Forecast evaluation · preddyfast")
 
 _VARIABLE_OPTIONS = [{"value": k, "label": v["label"]} for k, v in EVAL_VARIABLES.items()]
 
