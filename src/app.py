@@ -9,12 +9,18 @@ from pathlib import Path
 import dash_mantine_components as dmc
 from dash import Dash, html, page_container
 from flask import jsonify, request, send_from_directory
+from flask_limiter import Limiter
 
 from components.shared_state import nav_rail, shared_state
 from components.theme_toggle import THEMES, css_variables
 from utils import status
 from utils.cache import cache
-from utils.settings import PRECOMPUTE_DIR, URL_BASE_PATHNAME
+from utils.settings import (
+    PRECOMPUTE_DIR,
+    RATE_LIMIT,
+    TRUSTED_PROXY_HOPS,
+    URL_BASE_PATHNAME,
+)
 
 # No background callback manager, deliberately. The regional page's cold read
 # takes ~10-14 s, which would normally argue for `background=True` — but Dash's
@@ -58,9 +64,39 @@ cache.init_app(
         "CACHE_TYPE": os.environ.get("CACHE_TYPE", "FileSystemCache"),
         "CACHE_DIR": os.environ.get("CACHE_DIR", str(Path(".cache"))),
         "CACHE_DEFAULT_TIMEOUT": 3600,
+        # FileSystemCache's default of 500 entries culls job records and
+        # memoized reads long before their timeouts once visitors arrive.
+        "CACHE_THRESHOLD": int(os.environ.get("CACHE_THRESHOLD", "20000")),
     },
 )
 
+
+def client_address(forwarded: str | None, remote: str | None, hops: int = TRUSTED_PROXY_HOPS) -> str:
+    """The visitor's address: `hops` entries from the right of X-Forwarded-For.
+
+    Each trusted proxy appends the address it saw; entries further left were
+    sent by the client and can be anything, so they are never used.
+    """
+    chain = [part.strip() for part in (forwarded or "").split(",") if part.strip()]
+    if hops > 0 and len(chain) >= hops:
+        return chain[-hops]
+    return remote or "unknown"
+
+
+# Per-client limit on Dash callbacks: the only route that does work. In-memory
+# per worker, so the effective limit is up to workers x RATE_LIMIT — enough to
+# stop a script, with no extra service to run.
+limiter = Limiter(
+    lambda: client_address(request.headers.get("X-Forwarded-For"), request.remote_addr),
+    app=server,
+    storage_uri="memory://",
+    headers_enabled=True,
+)
+for _rule in server.url_map.iter_rules():
+    if _rule.rule.endswith("_dash-update-component"):
+        server.view_functions[_rule.endpoint] = limiter.limit(RATE_LIMIT)(
+            server.view_functions[_rule.endpoint]
+        )
 
 
 # Precomputed preset frames (scripts/precompute.py), served from disk. Once

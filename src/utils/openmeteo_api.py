@@ -13,6 +13,7 @@ from utils.cache import cache
 from utils.climatology import accumulate_over_window, calendar_day
 from utils.settings import (
     DETERMINISTIC_MODELS,
+    OPENMETEO_DAILY_BUDGET,
     VARIABLES,
 )
 
@@ -46,28 +47,64 @@ def _response_to_frame(response, variable: str) -> pd.DataFrame:
     return df
 
 
-# Free tier: 10,000 weighted calls a day per IP.
-_DAILY_CALL_CAP = 10_000
-_calls_today: dict[str, float] = {}
+class OpenMeteoQuotaError(RuntimeError):
+    """The site's share of Open-Meteo's free daily calls is spent."""
 
 
-def weighted_calls(days: int, n_vars: int = 1) -> float:
-    """Open-Meteo's weighted cost of one location: per 14 days and per 10 variables."""
-    return max(1.0, days / 14) * max(1.0, n_vars / 10)
+# Free tier: 10,000 weighted calls a day per IP — and on a public site every
+# visitor shares the server's IP. The count lives in the shared cache so all
+# workers see one total; once it reaches `OPENMETEO_DAILY_BUDGET` requests are
+# refused until the next UTC day rather than letting Open-Meteo start failing.
+_QUOTA_KEY = "openmeteo-weighted-calls:"
 
 
-def _count_calls(days: int, n_vars: int = 1) -> None:
-    """Log this process's running weighted total; warn near the free tier's daily cap."""
-    day = f"{_today():%Y-%m-%d}"
-    total = _calls_today.get(day, 0.0) + weighted_calls(days, n_vars)
-    _calls_today.clear()
-    _calls_today[day] = total
-    level = logging.WARNING if total > 0.8 * _DAILY_CALL_CAP else logging.INFO
-    _log.log(level, "Open-Meteo: ~%.0f weighted calls today in this process", total)
+def weighted_calls(days: int, n_series: int = 1) -> float:
+    """Open-Meteo's weighted cost of one location and model: per 14 days, per 10 series.
+
+    For the ensemble API every member counts as a series: Open-Meteo's own
+    example (one variable, ICON Seamless's 40 members, 7 days) costs 4.0.
+    """
+    return max(1.0, days / 14) * max(1.0, n_series / 10)
+
+
+def calls_today() -> float:
+    """Weighted calls this site has made today (UTC), across workers."""
+    return float(cache.get(_QUOTA_KEY + f"{_today():%Y-%m-%d}") or 0.0)
+
+
+def _check_quota() -> None:
+    if calls_today() >= OPENMETEO_DAILY_BUDGET:
+        raise OpenMeteoQuotaError(
+            "This public demo has used today's share of Open-Meteo's free API "
+            "calls. Forecasts already fetched are still shown; new ones resume "
+            "after 00 UTC. Past runs (from the archive) are not affected."
+        )
+
+
+def _series(response) -> int:
+    block = response.Hourly() or response.Daily()
+    return block.VariablesLength() if block is not None else 1
+
+
+def _get(url: str, params: dict, days: int) -> list:
+    """One Open-Meteo request: refused over budget, counted from what came back.
+
+    The weight is summed per response (one per model), with the member count
+    read from the response — never assumed per system.
+    """
+    _check_quota()
+    responses = _client.weather_api(url, params=params)
+    weight = sum(weighted_calls(days, _series(r)) for r in responses)
+    key = _QUOTA_KEY + f"{_today():%Y-%m-%d}"
+    total = calls_today() + weight  # read-modify-write: approximate across workers
+    cache.set(key, total, timeout=2 * 86_400)
+    level = logging.WARNING if total > 0.8 * OPENMETEO_DAILY_BUDGET else logging.INFO
+    _log.log(level, "Open-Meteo: +%.1f, ~%.0f weighted calls today", weight, total)
+    return responses
 
 
 def _today() -> pd.Timestamp:
-    return pd.Timestamp.now().normalize()
+    return pd.Timestamp.now(tz="UTC").normalize()
 
 
 @cache.memoize(timeout=1800)
@@ -118,7 +155,7 @@ def fetch_ensemble_accumulated(
         "models": model,
         "forecast_days": forecast_days,
     }
-    responses = _client.weather_api(ENSEMBLE_URL, params=params)
+    responses = _get(ENSEMBLE_URL, params, forecast_days)
     # Convert to the display unit *before* summing: the radiation field is a
     # mean flux in W/m², and one hour of it is 0.0036 MJ/m² — summing raw
     # watts would give a number in no unit at all.
@@ -190,8 +227,7 @@ def fetch_deterministic(
         "models": _api_models(keys),
         "forecast_days": forecast_days,
     }
-    responses = _client.weather_api(FORECAST_URL, params=params)
-    _count_calls(forecast_days, len(keys))
+    responses = _get(FORECAST_URL, params, forecast_days)
     out = {}
     for key, response in zip(keys, responses, strict=True):
         df = _response_to_frame(response, variable).assign(member=0)
@@ -220,8 +256,7 @@ def fetch_deterministic_accumulated(
         "models": _api_models(keys),
         "forecast_days": forecast_days,
     }
-    responses = _client.weather_api(FORECAST_URL, params=params)
-    _count_calls(forecast_days, len(keys))
+    responses = _get(FORECAST_URL, params, forecast_days)
     out = {}
     for key, response in zip(keys, responses, strict=True):
         df = _hourly_frame(response.Hourly(), meta["hourly_scale"], member=0)
@@ -252,7 +287,7 @@ def fetch_ensemble_synoptic(
         "models": model,
         "forecast_days": forecast_days,
     }
-    responses = _client.weather_api(ENSEMBLE_URL, params=params)
+    responses = _get(ENSEMBLE_URL, params, forecast_days)
     return _synoptic(_hourly_frame(responses[0].Hourly(), meta["hourly_scale"]), variable)
 
 
@@ -269,8 +304,7 @@ def fetch_deterministic_synoptic(
         "models": _api_models(keys),
         "forecast_days": forecast_days,
     }
-    responses = _client.weather_api(FORECAST_URL, params=params)
-    _count_calls(forecast_days, len(keys))
+    responses = _get(FORECAST_URL, params, forecast_days)
     out = {}
     for key, response in zip(keys, responses, strict=True):
         df = _synoptic(_hourly_frame(response.Hourly(), meta["hourly_scale"], member=0), variable)
@@ -307,7 +341,7 @@ def fetch_ensemble(
         "models": model,
         "forecast_days": forecast_days,
     }
-    responses = _client.weather_api(ENSEMBLE_URL, params=params)
+    responses = _get(ENSEMBLE_URL, params, forecast_days)
     daily = responses[0].Daily()
 
     dates = pd.date_range(

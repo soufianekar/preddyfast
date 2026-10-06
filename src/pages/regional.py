@@ -45,6 +45,7 @@ from utils.map_products import forecast_animation
 from utils.precomputed import preset_animation
 from utils.regions import REGIONS, grouped_options
 from utils.settings import (
+    MAX_MODELS,
     GRID_RESOLUTION_DEG,
     GRID_STORE_DEFAULT,
     GRID_STORES,
@@ -65,7 +66,7 @@ _DEFAULT_VARIABLE = "temperature_2m"
 # Several models may be drawn together, always from the same init (the run
 # picker offers only inits they all hold) and never pooled across models.
 _HORIZON_CHOICES = (72, 120, 168, 240, 360, 480, 720, 840, 1104)
-_MAX_MODELS = 3
+_MAX_MODELS = MAX_MODELS
 
 
 def _stores(model) -> tuple[str, ...]:

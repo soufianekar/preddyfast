@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--estimate", action="store_true", help="print read volumes and exit")
     parser.add_argument("--force", action="store_true", help="re-render runs already done")
     parser.add_argument("--no-animations", action="store_true")
-    parser.add_argument("--scores", action="store_true", help="also score PRECOMPUTE_STATIONS")
+    parser.add_argument("--scores", action="store_true", help="also score and draw PRECOMPUTE_STATIONS")
     parser.add_argument("--maps", nargs="*", metavar="ITEM", help="draw the ERA5 maps gallery (all, or these items)")
     parser.add_argument("--upload", action="store_true", help="copy outputs to R2 afterwards")
     parser.add_argument("--upload-hf", action="store_true", help="publish outputs to PRECOMPUTE_HF_REPO")
@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         # manifests must not be overwritten by the Dataset's older ones.
         hub_sync.sync(force=True)
         hub_sync.freeze()
-        from utils.evaluation import refresh_scores
+        from utils import eval_snapshot
 
         stores = tuple(args.stores)
         # Narrow the preset matrix for a trial run (the manifest records what was done).
@@ -98,8 +98,9 @@ def main(argv: list[str] | None = None) -> int:
             written = precomputed.refresh(stores, manifest, force=args.force)
             _log.info("%d animations written", written)
         if args.scores:
-            done = refresh_scores(PRECOMPUTE_STATIONS, stores)
-            _log.info("scores: %d evaluations persisted", done)
+            # Fixed models, not --stores: the page's figures compare these.
+            done = eval_snapshot.refresh(PRECOMPUTE_STATIONS)
+            _log.info("evaluation: %d evaluations drawn", done)
         if args.maps is not None:
             from utils import map_gallery
 

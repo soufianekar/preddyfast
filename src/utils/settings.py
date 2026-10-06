@@ -552,8 +552,11 @@ REGION_MAX_CELLS: int = 36_000
 # chunk sizes differ ~10x between stores (IFS ENS ~18 MB, GEFS ~2 MB, GFS
 # ~6 MB). Whether a shorter horizon saves download depends on the store:
 # IFS ENS keeps every lead in one chunk, GEFS splits leads into ~8-day blocks.
-# 1100 MB is a 10° box in two IFS-like models, or ECMWF Europe in one.
-READ_BUDGET_MB: float = 1100.0
+# 1100 MB is a 10° box in two IFS-like models, or ECMWF Europe in one. The
+# public site runs lower (env): every visitor's read is the same Space's time.
+READ_BUDGET_MB: float = float(os.environ.get("READ_BUDGET_MB", "400"))
+# Models one request may compare, on the meteogram and the area view.
+MAX_MODELS: int = int(os.environ.get("MAX_MODELS", "2"))
 
 # Variables available from the grid store. Keys are the store's own variable
 # names — do not reuse the Open-Meteo VARIABLES keys, they do not match.
@@ -762,8 +765,21 @@ CLIM_COLORS: dict[str, str] = {
 
 URL_BASE_PATHNAME: str = os.environ.get("URL_BASE_PATHNAME", "/")
 
-HISTORICAL_START_YEAR = 1981
-NOMINATIM_USER_AGENT = os.environ.get("NOMINATIM_USER_AGENT", "climate-dashboard/1.0")
+# Public-site guards (see app.py and utils/openmeteo_api.py).
+# Open-Meteo's free tier is 10,000 weighted calls a day per IP, shared here by
+# every visitor; requests stop at this budget, leaving headroom for retries.
+OPENMETEO_DAILY_BUDGET: float = float(os.environ.get("OPENMETEO_DAILY_BUDGET", "8000"))
+# Per-client limit on Dash callbacks, in flask-limiter syntax. A page load
+# fires ~10-20 callbacks, so this is set for scripts, not for people clicking.
+RATE_LIMIT: str = os.environ.get("RATE_LIMIT", "120 per minute;1500 per hour")
+# Proxies in front of the app that append to X-Forwarded-For (Hugging Face: 1).
+# The client is the address that many hops from the right; anything left of
+# it was written by the client and can be forged.
+TRUSTED_PROXY_HOPS: int = int(os.environ.get("TRUSTED_PROXY_HOPS", "1"))
+
+# Nominatim's usage policy asks for an identifying User-Agent (with a contact,
+# set on the deployment) and at most one request per second from the site.
+NOMINATIM_USER_AGENT = os.environ.get("NOMINATIM_USER_AGENT", "preddyfast/1.0")
 MAPBOX_KEY = os.environ.get("MAPBOX_KEY", "")
 
 
@@ -1771,6 +1787,8 @@ PRECOMPUTE_STATISTICS: dict[str, tuple[str, ...]] = {"precipitation_surface": ("
 PRECOMPUTE_STEP_HOURS: int = 24
 PRECOMPUTE_HORIZON_HOURS: int = 360
 PRECOMPUTE_STATIONS: tuple[str, ...] = ("FRM00007156",)
+# Models the public Evaluation snapshots score (utils/eval_snapshot.py).
+EVAL_SNAPSHOT_STORES: tuple[str, ...] = ("ifs_ens", "aifs_ens")
 OBS_TIMEOUT_S: float = 30.0
 OBS_STATION_LIST_MAX_AGE_H: float = 24 * 7
 # The current year's file grows through the day; past years never change.

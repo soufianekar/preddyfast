@@ -24,7 +24,13 @@ from utils.settings import PRECOMPUTE_DIR, PRECOMPUTE_HF_REPO, PRECOMPUTE_SYNC_S
 _log = logging.getLogger(__name__)
 
 # What the server reads from disk; images are fetched by the browser instead.
-SYNC_PATTERNS = ["latest.json", "maps/gallery.json", "frames/**/fields.npz", "scores/**/*.parquet"]
+SYNC_PATTERNS = [
+    "latest.json",
+    "maps/gallery.json",
+    "eval/**/*.json",
+    "frames/**/fields.npz",
+    "scores/**/*.parquet",
+]
 _STAMP = ".synced"
 _NEVER_UPLOAD = [_STAMP, "**/*.part", ".cache/**"]
 _frozen = False

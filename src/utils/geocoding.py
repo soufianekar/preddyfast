@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import requests
 
 from utils.cache import cache
@@ -14,6 +16,23 @@ MAPBOX_URL = "https://api.mapbox.com/geocoding/v5/mapbox.places"
 
 class GeocodingError(RuntimeError):
     """The geocoding service could not be reached; message is user-facing."""
+
+
+_SLOT_KEY = "nominatim-slot"
+
+
+def _nominatim_slot(wait_s: float = 3.0) -> None:
+    """Take the site's one-per-second Nominatim slot, shared by all workers.
+
+    Nominatim's usage policy allows one request per second from an
+    application, not per visitor. A request that cannot get the slot within
+    `wait_s` is refused with a message rather than queued indefinitely.
+    """
+    deadline = time.monotonic() + wait_s
+    while not cache.add(_SLOT_KEY, 1, timeout=1):
+        if time.monotonic() > deadline:
+            raise GeocodingError("Place search is busy; try again in a moment.")
+        time.sleep(0.25)
 
 
 @cache.memoize(timeout=86400)
@@ -39,6 +58,7 @@ def geocode(query: str) -> list[dict]:
 def _nominatim_geocode(query: str) -> list[dict]:
     params = {"q": query, "format": "json", "limit": 5}
     headers = {"User-Agent": NOMINATIM_USER_AGENT}
+    _nominatim_slot()
     response = requests.get(NOMINATIM_URL, params=params, headers=headers, timeout=5)
     response.raise_for_status()
     return [
@@ -62,6 +82,7 @@ def reverse_geocode(lat: float, lon: float) -> str:
     params = {"lat": lat, "lon": lon, "format": "json", "zoom": 10}
     headers = {"User-Agent": NOMINATIM_USER_AGENT}
     try:
+        _nominatim_slot()
         response = requests.get(
             NOMINATIM_REVERSE_URL, params=params, headers=headers, timeout=5
         )
@@ -76,7 +97,7 @@ def reverse_geocode(lat: float, lon: float) -> str:
             or payload.get("display_name", "").split(",")[0]
         )
         return name or f"{lat:.2f}, {lon:.2f}"
-    except requests.RequestException:
+    except (requests.RequestException, GeocodingError):
         return f"{lat:.2f}, {lon:.2f}"
 
 

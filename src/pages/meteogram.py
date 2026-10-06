@@ -31,7 +31,7 @@ from utils.openmeteo_api import (
     fetch_ensemble_accumulated,
     fetch_ensemble_synoptic,
 )
-from utils.settings import DETERMINISTIC_MODELS, ENSEMBLE_MODELS, GRID_STORES, VARIABLES
+from utils.settings import DETERMINISTIC_MODELS, ENSEMBLE_MODELS, GRID_STORES, MAX_MODELS, VARIABLES
 from utils.text import in_sentence
 from utils.url_state import query_choice, query_list
 
@@ -51,7 +51,7 @@ _SYSTEM_OPTIONS = [
 _FORECAST_DAY_OPTIONS = [{"value": str(d), "label": f"{d} days"} for d in (3, 5, 7, 10, 14, 16)]
 # Past runs reach further with GEFS (35 d).
 _PAST_DAY_CHOICES = (3, 5, 7, 10, 14, 16, 21, 28, 35)
-_MAX_MODELS = 3
+_MAX_MODELS = MAX_MODELS
 
 # ECMWF ENS (its control drawn as the bold line), AI ENS, and the two
 # deterministic ECMWF runs.

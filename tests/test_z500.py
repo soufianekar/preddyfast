@@ -53,10 +53,10 @@ def test_deterministic_synoptic_leaves_out_a_model_without_the_field(monkeypatch
 def test_evaluation_z500_has_no_station_reference():
     spec = EVAL_VARIABLES["z500"]
     assert spec["grid"] == "geopotential_height_500hpa" and spec["obs"] is None
-    from pages import evaluation as page
+    from utils.eval_snapshot import usable_references
 
-    refs = {o["value"]: o.get("disabled", False) for o in page._reference_options("z500")}
-    assert refs["stations"] is True and refs["control_t0"] is False
+    refs = usable_references("z500")
+    assert "stations" not in refs and "control_t0" in refs
 
 
 def test_evaluate_point_refuses_stations_for_z500(monkeypatch):
