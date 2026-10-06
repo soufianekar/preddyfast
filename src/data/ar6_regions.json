@@ -1,0 +1,1869 @@
+{
+ "source": "https://raw.githubusercontent.com/IPCC-WG1/Atlas/main/reference-regions/IPCC-WGI-reference-regions-v4_coordinates.csv",
+ "regions": [
+  {
+   "acronym": "GIC",
+   "name": "Greenland/Iceland",
+   "continent": "Polar",
+   "surface": "Land",
+   "vertices": [
+    [
+     -10.0,
+     62.0
+    ],
+    [
+     -38.0,
+     62.0
+    ],
+    [
+     -42.0,
+     58.0
+    ],
+    [
+     -50.0,
+     58.0
+    ],
+    [
+     -82.0,
+     85.0
+    ],
+    [
+     -10.0,
+     85.0
+    ]
+   ]
+  },
+  {
+   "acronym": "NWN",
+   "name": "N.W. North America",
+   "continent": "North-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -105.0,
+     50.0
+    ],
+    [
+     -130.0,
+     50.0
+    ],
+    [
+     -143.0,
+     58.0
+    ],
+    [
+     -168.0,
+     52.5
+    ],
+    [
+     -168.0,
+     72.6
+    ],
+    [
+     -129.0,
+     72.6
+    ],
+    [
+     -125.0,
+     77.6
+    ],
+    [
+     -105.0,
+     81.0
+    ]
+   ]
+  },
+  {
+   "acronym": "NEN",
+   "name": "N.E. North America",
+   "continent": "North-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -50.0,
+     50.0
+    ],
+    [
+     -50.0,
+     58.0
+    ],
+    [
+     -82.0,
+     85.0
+    ],
+    [
+     -105.0,
+     81.0
+    ],
+    [
+     -105.0,
+     50.0
+    ]
+   ]
+  },
+  {
+   "acronym": "WNA",
+   "name": "W. North America",
+   "continent": "North-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -130.0,
+     50.0
+    ],
+    [
+     -122.5,
+     33.8
+    ],
+    [
+     -105.0,
+     33.8
+    ],
+    [
+     -105.0,
+     50.0
+    ]
+   ]
+  },
+  {
+   "acronym": "CNA",
+   "name": "C. North America",
+   "continent": "North-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -90.0,
+     50.0
+    ],
+    [
+     -90.0,
+     25.0
+    ],
+    [
+     -105.0,
+     33.8
+    ],
+    [
+     -105.0,
+     50.0
+    ]
+   ]
+  },
+  {
+   "acronym": "ENA",
+   "name": "E. North America",
+   "continent": "North-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -70.0,
+     25.0
+    ],
+    [
+     -90.0,
+     25.0
+    ],
+    [
+     -90.0,
+     50.0
+    ],
+    [
+     -50.0,
+     50.0
+    ],
+    [
+     -77.0,
+     31.0
+    ]
+   ]
+  },
+  {
+   "acronym": "NCA",
+   "name": "N. Central America",
+   "continent": "Central-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -90.0,
+     25.0
+    ],
+    [
+     -104.5,
+     16.0
+    ],
+    [
+     -122.5,
+     33.8
+    ],
+    [
+     -105.0,
+     33.8
+    ]
+   ]
+  },
+  {
+   "acronym": "SCA",
+   "name": "S. Central America",
+   "continent": "Central-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -75.0,
+     12.0
+    ],
+    [
+     -83.4,
+     2.2
+    ],
+    [
+     -104.5,
+     16.0
+    ],
+    [
+     -90.0,
+     25.0
+    ]
+   ]
+  },
+  {
+   "acronym": "CAR",
+   "name": "Caribbean",
+   "continent": "Central-America",
+   "surface": "Land-Ocean",
+   "vertices": [
+    [
+     -75.0,
+     12.0
+    ],
+    [
+     -90.0,
+     25.0
+    ],
+    [
+     -70.0,
+     25.0
+    ],
+    [
+     -55.0,
+     12.0
+    ]
+   ]
+  },
+  {
+   "acronym": "NWS",
+   "name": "N.W. South America",
+   "continent": "South-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -75.0,
+     12.0
+    ],
+    [
+     -83.4,
+     2.2
+    ],
+    [
+     -83.4,
+     -10.0
+    ],
+    [
+     -79.0,
+     -15.0
+    ],
+    [
+     -72.0,
+     -15.0
+    ],
+    [
+     -72.0,
+     12.0
+    ]
+   ]
+  },
+  {
+   "acronym": "NSA",
+   "name": "N. South America",
+   "continent": "South-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -72.0,
+     12.0
+    ],
+    [
+     -72.0,
+     -8.0
+    ],
+    [
+     -50.0,
+     -8.0
+    ],
+    [
+     -50.0,
+     7.6
+    ],
+    [
+     -55.0,
+     12.0
+    ]
+   ]
+  },
+  {
+   "acronym": "NES",
+   "name": "N.E. South America",
+   "continent": "South-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -34.0,
+     -20.0
+    ],
+    [
+     -50.0,
+     -20.0
+    ],
+    [
+     -50.0,
+     0.0
+    ],
+    [
+     -34.0,
+     0.0
+    ]
+   ]
+  },
+  {
+   "acronym": "SAM",
+   "name": "South American Monsoon",
+   "continent": "South-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -66.4,
+     -20.0
+    ],
+    [
+     -72.0,
+     -15.0
+    ],
+    [
+     -72.0,
+     -8.0
+    ],
+    [
+     -50.0,
+     -8.0
+    ],
+    [
+     -50.0,
+     -20.0
+    ]
+   ]
+  },
+  {
+   "acronym": "SWS",
+   "name": "S.W. South America",
+   "continent": "South-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -72.0,
+     -15.0
+    ],
+    [
+     -66.4,
+     -20.0
+    ],
+    [
+     -71.5,
+     -47.0
+    ],
+    [
+     -79.0,
+     -47.0
+    ],
+    [
+     -74.6,
+     -20.0
+    ],
+    [
+     -79.0,
+     -15.0
+    ]
+   ]
+  },
+  {
+   "acronym": "SES",
+   "name": "S.E. South America",
+   "continent": "South-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -34.0,
+     -20.0
+    ],
+    [
+     -56.0,
+     -40.0
+    ],
+    [
+     -70.2,
+     -40.0
+    ],
+    [
+     -66.4,
+     -20.0
+    ]
+   ]
+  },
+  {
+   "acronym": "SSA",
+   "name": "S. South America",
+   "continent": "South-America",
+   "surface": "Land",
+   "vertices": [
+    [
+     -79.0,
+     -56.0
+    ],
+    [
+     -79.0,
+     -47.0
+    ],
+    [
+     -71.5,
+     -47.0
+    ],
+    [
+     -70.2,
+     -40.0
+    ],
+    [
+     -56.0,
+     -40.0
+    ],
+    [
+     -56.0,
+     -56.0
+    ]
+   ]
+  },
+  {
+   "acronym": "NEU",
+   "name": "N. Europe",
+   "continent": "Europe",
+   "surface": "Land",
+   "vertices": [
+    [
+     -10.0,
+     48.0
+    ],
+    [
+     -10.0,
+     72.6
+    ],
+    [
+     40.0,
+     72.6
+    ],
+    [
+     40.0,
+     61.3
+    ]
+   ]
+  },
+  {
+   "acronym": "WCE",
+   "name": "West&Central Europe",
+   "continent": "Europe",
+   "surface": "Land",
+   "vertices": [
+    [
+     -10.0,
+     45.0
+    ],
+    [
+     -10.0,
+     48.0
+    ],
+    [
+     40.0,
+     61.3
+    ],
+    [
+     40.0,
+     45.0
+    ]
+   ]
+  },
+  {
+   "acronym": "EEU",
+   "name": "E. Europe",
+   "continent": "Europe",
+   "surface": "Land",
+   "vertices": [
+    [
+     40.0,
+     45.0
+    ],
+    [
+     40.0,
+     65.0
+    ],
+    [
+     60.0,
+     65.0
+    ],
+    [
+     60.0,
+     45.0
+    ]
+   ]
+  },
+  {
+   "acronym": "MED",
+   "name": "Mediterranean",
+   "continent": "Europe-Africa",
+   "surface": "Land-Ocean",
+   "vertices": [
+    [
+     -10.0,
+     30.0
+    ],
+    [
+     -10.0,
+     45.0
+    ],
+    [
+     40.0,
+     45.0
+    ],
+    [
+     40.0,
+     30.0
+    ]
+   ]
+  },
+  {
+   "acronym": "SAH",
+   "name": "Sahara",
+   "continent": "Africa",
+   "surface": "Land",
+   "vertices": [
+    [
+     -20.0,
+     14.7
+    ],
+    [
+     -20.0,
+     30.0
+    ],
+    [
+     33.0,
+     30.0
+    ],
+    [
+     42.1,
+     14.7
+    ]
+   ]
+  },
+  {
+   "acronym": "WAF",
+   "name": "Western Africa",
+   "continent": "Africa",
+   "surface": "Land",
+   "vertices": [
+    [
+     -20.0,
+     7.6
+    ],
+    [
+     -20.0,
+     14.7
+    ],
+    [
+     15.0,
+     14.7
+    ],
+    [
+     8.0,
+     0.0
+    ]
+   ]
+  },
+  {
+   "acronym": "CAF",
+   "name": "Central Africa",
+   "continent": "Africa",
+   "surface": "Land",
+   "vertices": [
+    [
+     8.0,
+     -10.0
+    ],
+    [
+     8.0,
+     0.0
+    ],
+    [
+     15.0,
+     14.7
+    ],
+    [
+     27.0,
+     14.7
+    ],
+    [
+     27.0,
+     -10.0
+    ]
+   ]
+  },
+  {
+   "acronym": "NEAF",
+   "name": "N. Eastern Africa",
+   "continent": "Africa",
+   "surface": "Land",
+   "vertices": [
+    [
+     27.0,
+     2.3
+    ],
+    [
+     27.0,
+     14.7
+    ],
+    [
+     42.1,
+     14.7
+    ],
+    [
+     43.7,
+     12.0
+    ],
+    [
+     53.0,
+     15.0
+    ],
+    [
+     53.0,
+     7.0
+    ],
+    [
+     46.5,
+     2.3
+    ]
+   ]
+  },
+  {
+   "acronym": "SEAF",
+   "name": "S. Eastern Africa",
+   "continent": "Africa",
+   "surface": "Land",
+   "vertices": [
+    [
+     27.0,
+     -10.0
+    ],
+    [
+     27.0,
+     2.3
+    ],
+    [
+     46.5,
+     2.3
+    ],
+    [
+     46.5,
+     -10.0
+    ]
+   ]
+  },
+  {
+   "acronym": "WSAF",
+   "name": "W. Southern Africa",
+   "continent": "Africa",
+   "surface": "Land",
+   "vertices": [
+    [
+     8.0,
+     -36.0
+    ],
+    [
+     8.0,
+     -10.0
+    ],
+    [
+     25.0,
+     -10.0
+    ],
+    [
+     25.0,
+     -36.0
+    ]
+   ]
+  },
+  {
+   "acronym": "ESAF",
+   "name": "E. Southern Africa",
+   "continent": "Africa",
+   "surface": "Land",
+   "vertices": [
+    [
+     25.0,
+     -10.0
+    ],
+    [
+     25.0,
+     -36.0
+    ],
+    [
+     31.0,
+     -36.0
+    ],
+    [
+     46.5,
+     -10.0
+    ]
+   ]
+  },
+  {
+   "acronym": "MDG",
+   "name": "Madagascar",
+   "continent": "Africa",
+   "surface": "Land",
+   "vertices": [
+    [
+     36.2,
+     -27.0
+    ],
+    [
+     46.5,
+     -10.0
+    ],
+    [
+     53.0,
+     -10.0
+    ],
+    [
+     53.0,
+     -27.0
+    ]
+   ]
+  },
+  {
+   "acronym": "RAR",
+   "name": "Russian Arctic",
+   "continent": "Asia",
+   "surface": "Land",
+   "vertices": [
+    [
+     40.0,
+     65.0
+    ],
+    [
+     40.0,
+     72.6
+    ],
+    [
+     94.0,
+     82.0
+    ],
+    [
+     180.0,
+     73.8
+    ],
+    [
+     180.0,
+     65.0
+    ]
+   ]
+  },
+  {
+   "acronym": "RAR*",
+   "name": "Russian Arctic",
+   "continent": "Asia",
+   "surface": "Land",
+   "vertices": [
+    [
+     -180.0,
+     73.8
+    ],
+    [
+     -180.0,
+     65.0
+    ],
+    [
+     -168.0,
+     65.0
+    ],
+    [
+     -168.0,
+     72.6
+    ]
+   ]
+  },
+  {
+   "acronym": "WSB",
+   "name": "W. Siberia",
+   "continent": "Asia",
+   "surface": "Land",
+   "vertices": [
+    [
+     60.0,
+     45.0
+    ],
+    [
+     60.0,
+     65.0
+    ],
+    [
+     90.0,
+     65.0
+    ],
+    [
+     90.0,
+     45.0
+    ]
+   ]
+  },
+  {
+   "acronym": "ESB",
+   "name": "E. Siberia",
+   "continent": "Asia",
+   "surface": "Land",
+   "vertices": [
+    [
+     90.0,
+     45.0
+    ],
+    [
+     90.0,
+     65.0
+    ],
+    [
+     130.0,
+     65.0
+    ],
+    [
+     130.0,
+     45.0
+    ]
+   ]
+  },
+  {
+   "acronym": "RFE",
+   "name": "Russian Far East",
+   "continent": "Asia",
+   "surface": "Land",
+   "vertices": [
+    [
+     130.0,
+     45.0
+    ],
+    [
+     130.0,
+     65.0
+    ],
+    [
+     180.0,
+     65.0
+    ],
+    [
+     180.0,
+     59.9
+    ],
+    [
+     157.0,
+     50.0
+    ],
+    [
+     152.0,
+     45.0
+    ]
+   ]
+  },
+  {
+   "acronym": "WCA",
+   "name": "W.C. Asia",
+   "continent": "Asia",
+   "surface": "Land",
+   "vertices": [
+    [
+     40.0,
+     30.0
+    ],
+    [
+     40.0,
+     45.0
+    ],
+    [
+     75.0,
+     45.0
+    ],
+    [
+     75.0,
+     30.0
+    ],
+    [
+     60.0,
+     30.0
+    ],
+    [
+     60.0,
+     23.5
+    ],
+    [
+     47.6,
+     30.0
+    ]
+   ]
+  },
+  {
+   "acronym": "ECA",
+   "name": "E.C. Asia",
+   "continent": "Asia",
+   "surface": "Land",
+   "vertices": [
+    [
+     75.0,
+     37.0
+    ],
+    [
+     75.0,
+     45.0
+    ],
+    [
+     117.0,
+     45.0
+    ],
+    [
+     108.0,
+     37.0
+    ]
+   ]
+  },
+  {
+   "acronym": "TIB",
+   "name": "Tibetan Plateau",
+   "continent": "Asia",
+   "surface": "Land",
+   "vertices": [
+    [
+     75.0,
+     30.0
+    ],
+    [
+     75.0,
+     37.0
+    ],
+    [
+     100.0,
+     37.0
+    ],
+    [
+     100.0,
+     30.0
+    ],
+    [
+     88.0,
+     26.0
+    ]
+   ]
+  },
+  {
+   "acronym": "EAS",
+   "name": "E. Asia",
+   "continent": "Asia",
+   "surface": "Land",
+   "vertices": [
+    [
+     100.0,
+     19.5
+    ],
+    [
+     100.0,
+     37.0
+    ],
+    [
+     108.0,
+     37.0
+    ],
+    [
+     117.0,
+     45.0
+    ],
+    [
+     152.0,
+     45.0
+    ],
+    [
+     132.0,
+     25.0
+    ],
+    [
+     132.0,
+     19.5
+    ]
+   ]
+  },
+  {
+   "acronym": "ARP",
+   "name": "Arabian Peninsula",
+   "continent": "Asia",
+   "surface": "Land",
+   "vertices": [
+    [
+     33.0,
+     30.0
+    ],
+    [
+     47.6,
+     30.0
+    ],
+    [
+     60.0,
+     23.5
+    ],
+    [
+     60.0,
+     19.5
+    ],
+    [
+     53.0,
+     15.0
+    ],
+    [
+     43.7,
+     12.0
+    ]
+   ]
+  },
+  {
+   "acronym": "SAS",
+   "name": "S. Asia",
+   "continent": "Asia",
+   "surface": "Land",
+   "vertices": [
+    [
+     60.0,
+     23.5
+    ],
+    [
+     60.0,
+     30.0
+    ],
+    [
+     75.0,
+     30.0
+    ],
+    [
+     88.0,
+     26.0
+    ],
+    [
+     100.0,
+     30.0
+    ],
+    [
+     100.0,
+     19.5
+    ],
+    [
+     95.0,
+     19.5
+    ],
+    [
+     87.0,
+     19.5
+    ],
+    [
+     79.0,
+     7.0
+    ],
+    [
+     76.0,
+     7.0
+    ],
+    [
+     70.0,
+     19.5
+    ],
+    [
+     66.5,
+     23.5
+    ]
+   ]
+  },
+  {
+   "acronym": "SEA",
+   "name": "S.E. Asia",
+   "continent": "Asia",
+   "surface": "Land-Ocean",
+   "vertices": [
+    [
+     93.0,
+     -10.0
+    ],
+    [
+     93.0,
+     19.5
+    ],
+    [
+     132.0,
+     19.5
+    ],
+    [
+     132.0,
+     5.0
+    ],
+    [
+     155.0,
+     -10.0
+    ]
+   ]
+  },
+  {
+   "acronym": "NAU",
+   "name": "N. Australia",
+   "continent": "Oceania",
+   "surface": "Land",
+   "vertices": [
+    [
+     110.0,
+     -20.0
+    ],
+    [
+     110.0,
+     -10.0
+    ],
+    [
+     155.0,
+     -10.0
+    ],
+    [
+     155.0,
+     -20.0
+    ]
+   ]
+  },
+  {
+   "acronym": "CAU",
+   "name": "C. Australia",
+   "continent": "Oceania",
+   "surface": "Land",
+   "vertices": [
+    [
+     110.0,
+     -30.0
+    ],
+    [
+     110.0,
+     -20.0
+    ],
+    [
+     145.5,
+     -20.0
+    ],
+    [
+     145.5,
+     -32.9
+    ],
+    [
+     140.0,
+     -30.0
+    ]
+   ]
+  },
+  {
+   "acronym": "EAU",
+   "name": "E. Australia",
+   "continent": "Oceania",
+   "surface": "Land",
+   "vertices": [
+    [
+     145.5,
+     -32.9
+    ],
+    [
+     145.5,
+     -20.0
+    ],
+    [
+     155.0,
+     -20.0
+    ],
+    [
+     155.0,
+     -38.0
+    ]
+   ]
+  },
+  {
+   "acronym": "SAU",
+   "name": "S. Australia",
+   "continent": "Oceania",
+   "surface": "Land",
+   "vertices": [
+    [
+     110.0,
+     -36.0
+    ],
+    [
+     110.0,
+     -30.0
+    ],
+    [
+     140.0,
+     -30.0
+    ],
+    [
+     155.0,
+     -38.0
+    ],
+    [
+     155.0,
+     -50.0
+    ]
+   ]
+  },
+  {
+   "acronym": "NZ",
+   "name": "New Zealand",
+   "continent": "Oceania",
+   "surface": "Land",
+   "vertices": [
+    [
+     155.0,
+     -50.0
+    ],
+    [
+     155.0,
+     -30.0
+    ],
+    [
+     180.0,
+     -30.0
+    ],
+    [
+     180.0,
+     -50.0
+    ]
+   ]
+  },
+  {
+   "acronym": "EAN",
+   "name": "E. Antarctica",
+   "continent": "Polar",
+   "surface": "Land",
+   "vertices": [
+    [
+     -180.0,
+     -90.0
+    ],
+    [
+     -180.0,
+     -83.0
+    ],
+    [
+     -56.0,
+     -83.0
+    ],
+    [
+     -56.0,
+     -75.0
+    ],
+    [
+     -25.0,
+     -75.0
+    ],
+    [
+     5.0,
+     -64.0
+    ],
+    [
+     180.0,
+     -64.0
+    ],
+    [
+     180.0,
+     -90.0
+    ]
+   ]
+  },
+  {
+   "acronym": "WAN",
+   "name": "W. Antarctica",
+   "continent": "Polar",
+   "surface": "Land",
+   "vertices": [
+    [
+     -180.0,
+     -83.0
+    ],
+    [
+     -180.0,
+     -70.0
+    ],
+    [
+     -80.0,
+     -70.0
+    ],
+    [
+     -65.0,
+     -62.0
+    ],
+    [
+     -56.0,
+     -62.0
+    ],
+    [
+     -56.0,
+     -83.0
+    ]
+   ]
+  },
+  {
+   "acronym": "ARO",
+   "name": "Arctic Ocean",
+   "continent": "Arctic",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     -180.0,
+     90.0
+    ],
+    [
+     -180.0,
+     73.8
+    ],
+    [
+     -168.0,
+     72.6
+    ],
+    [
+     -129.0,
+     72.6
+    ],
+    [
+     -125.0,
+     77.6
+    ],
+    [
+     -82.0,
+     85.0
+    ],
+    [
+     -10.0,
+     85.0
+    ],
+    [
+     -10.0,
+     72.6
+    ],
+    [
+     40.0,
+     72.6
+    ],
+    [
+     94.0,
+     82.0
+    ],
+    [
+     180.0,
+     73.8
+    ],
+    [
+     180.0,
+     90.0
+    ]
+   ]
+  },
+  {
+   "acronym": "NPO",
+   "name": "N. Pacific Ocean",
+   "continent": "Pacific",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     132.0,
+     7.6
+    ],
+    [
+     132.0,
+     25.0
+    ],
+    [
+     157.0,
+     50.0
+    ],
+    [
+     180.0,
+     59.9
+    ],
+    [
+     180.0,
+     7.6
+    ]
+   ]
+  },
+  {
+   "acronym": "NPO*",
+   "name": "N. Pacific Ocean",
+   "continent": "Pacific",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     -180.0,
+     7.6
+    ],
+    [
+     -180.0,
+     65.0
+    ],
+    [
+     -168.0,
+     65.0
+    ],
+    [
+     -168.0,
+     52.5
+    ],
+    [
+     -143.0,
+     58.0
+    ],
+    [
+     -130.0,
+     50.0
+    ],
+    [
+     -122.5,
+     33.8
+    ],
+    [
+     -104.5,
+     16.0
+    ],
+    [
+     -91.7,
+     7.6
+    ]
+   ]
+  },
+  {
+   "acronym": "EPO",
+   "name": "Equatorial. Pacific Ocean",
+   "continent": "Pacific",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     155.0,
+     -10.0
+    ],
+    [
+     132.0,
+     5.0
+    ],
+    [
+     132.0,
+     7.6
+    ],
+    [
+     180.0,
+     7.6
+    ],
+    [
+     180.0,
+     -10.0
+    ]
+   ]
+  },
+  {
+   "acronym": "EPO*",
+   "name": "Equatorial. Pacific Ocean",
+   "continent": "Pacific",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     -180.0,
+     -10.0
+    ],
+    [
+     -180.0,
+     7.6
+    ],
+    [
+     -91.7,
+     7.6
+    ],
+    [
+     -83.4,
+     2.2
+    ],
+    [
+     -83.4,
+     -10.0
+    ]
+   ]
+  },
+  {
+   "acronym": "SPO",
+   "name": "S. Pacific Ocean",
+   "continent": "Pacific",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     180.0,
+     -10.0
+    ],
+    [
+     180.0,
+     -30.0
+    ],
+    [
+     155.0,
+     -30.0
+    ],
+    [
+     155.0,
+     -10.0
+    ]
+   ]
+  },
+  {
+   "acronym": "SPO*",
+   "name": "S. Pacific Ocean",
+   "continent": "Pacific",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     -180.0,
+     -56.0
+    ],
+    [
+     -180.0,
+     -10.0
+    ],
+    [
+     -83.4,
+     -10.0
+    ],
+    [
+     -74.6,
+     -20.0
+    ],
+    [
+     -79.0,
+     -47.0
+    ],
+    [
+     -79.0,
+     -56.0
+    ]
+   ]
+  },
+  {
+   "acronym": "NAO",
+   "name": "N. Atlantic Ocean",
+   "continent": "Atlantic",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     -50.0,
+     7.6
+    ],
+    [
+     -77.0,
+     31.0
+    ],
+    [
+     -50.0,
+     50.0
+    ],
+    [
+     -50.0,
+     58.0
+    ],
+    [
+     -42.0,
+     58.0
+    ],
+    [
+     -38.0,
+     62.0
+    ],
+    [
+     -10.0,
+     62.0
+    ],
+    [
+     -10.0,
+     30.0
+    ],
+    [
+     -20.0,
+     30.0
+    ],
+    [
+     -20.0,
+     7.6
+    ]
+   ]
+  },
+  {
+   "acronym": "EAO",
+   "name": "Equatorial. Atlantic Ocean",
+   "continent": "Atlantic",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     -34.0,
+     -10.0
+    ],
+    [
+     -34.0,
+     0.0
+    ],
+    [
+     -50.0,
+     0.0
+    ],
+    [
+     -50.0,
+     7.6
+    ],
+    [
+     -20.0,
+     7.6
+    ],
+    [
+     8.0,
+     0.0
+    ],
+    [
+     8.0,
+     -10.0
+    ]
+   ]
+  },
+  {
+   "acronym": "SAO",
+   "name": "S. Atlantic Ocean",
+   "continent": "Atlantic",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     -56.0,
+     -56.0
+    ],
+    [
+     -56.0,
+     -40.0
+    ],
+    [
+     -34.0,
+     -20.0
+    ],
+    [
+     -34.0,
+     -10.0
+    ],
+    [
+     8.0,
+     -10.0
+    ],
+    [
+     8.0,
+     -36.0
+    ]
+   ]
+  },
+  {
+   "acronym": "ARS",
+   "name": "Arabian Sea",
+   "continent": "Indian",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     53.0,
+     7.0
+    ],
+    [
+     53.0,
+     15.0
+    ],
+    [
+     60.0,
+     19.5
+    ],
+    [
+     60.0,
+     23.5
+    ],
+    [
+     66.5,
+     23.5
+    ],
+    [
+     70.0,
+     19.5
+    ],
+    [
+     76.0,
+     7.0
+    ]
+   ]
+  },
+  {
+   "acronym": "BOB",
+   "name": "Bay of Bengal",
+   "continent": "Indian",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     79.0,
+     7.0
+    ],
+    [
+     87.0,
+     19.5
+    ],
+    [
+     93.0,
+     19.5
+    ],
+    [
+     93.0,
+     7.0
+    ]
+   ]
+  },
+  {
+   "acronym": "EIO",
+   "name": "Equatorial. Indian Ocean",
+   "continent": "Indian",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     46.5,
+     -10.0
+    ],
+    [
+     46.5,
+     2.3
+    ],
+    [
+     53.0,
+     7.0
+    ],
+    [
+     93.0,
+     7.0
+    ],
+    [
+     93.0,
+     -10.0
+    ]
+   ]
+  },
+  {
+   "acronym": "SIO",
+   "name": "S. Indian Ocean",
+   "continent": "Indian",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     36.2,
+     -27.0
+    ],
+    [
+     53.0,
+     -27.0
+    ],
+    [
+     53.0,
+     -10.0
+    ],
+    [
+     110.0,
+     -10.0
+    ],
+    [
+     110.0,
+     -36.0
+    ],
+    [
+     31.0,
+     -36.0
+    ]
+   ]
+  },
+  {
+   "acronym": "SOO",
+   "name": "Southern Ocean",
+   "continent": "Southern",
+   "surface": "Ocean",
+   "vertices": [
+    [
+     -180.0,
+     -56.0
+    ],
+    [
+     -180.0,
+     -70.0
+    ],
+    [
+     -80.0,
+     -70.0
+    ],
+    [
+     -65.0,
+     -62.0
+    ],
+    [
+     -56.0,
+     -62.0
+    ],
+    [
+     -56.0,
+     -75.0
+    ],
+    [
+     -25.0,
+     -75.0
+    ],
+    [
+     5.0,
+     -64.0
+    ],
+    [
+     180.0,
+     -64.0
+    ],
+    [
+     180.0,
+     -50.0
+    ],
+    [
+     155.0,
+     -50.0
+    ],
+    [
+     110.0,
+     -36.0
+    ],
+    [
+     8.0,
+     -36.0
+    ],
+    [
+     -56.0,
+     -56.0
+    ]
+   ]
+  }
+ ]
+}

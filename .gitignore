@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# App caches: flask-caching FileSystemCache, requests-cache, and the
+# background-callback diskcache. All regenerate on demand.
+.cache/
+
+
+# Untested deployment config. Kept locally; excluded until the image is
+# actually built and run against the current dependency set.
+Dockerfile
+
+# macOS
+.DS_Store
+
+# Smoke-test artefacts
+notebooks/output/
+.ipynb_checkpoints/
+
+# Retrieved CDS/ADS NetCDF, keyed by request hash (see utils/cds_api.py)
+.cds-cache/
+
+# GHCNh station observations (see utils/observations.py)
+.obs-cache/
+
+# Past-run point extracts (see earthmover_api._point_run)
+.point-cache/
+.scores/
+.history/
+.precomputed/

@@ -1,0 +1,74 @@
+# Precompute preset animations and station scores, then copy them to R2.
+#
+# DISABLED until hosting is decided: manual runs only. To schedule it, add the
+# `schedule:` block below back under `on:` and set the repository secrets
+# R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET.
+#
+# Runs are cheap when there is nothing new: each store is skipped while the
+# manifest already holds its newest finished run. Timing after the ECMWF 00/12
+# UTC runs land in the dynamical.org archive; GitHub may start a scheduled run
+# 5–30 min late, which does not matter at this cadence.
+#
+#  schedule:
+#    - cron: "30 8 * * *"    # 00 UTC runs
+#    - cron: "30 20 * * *"   # 12 UTC runs
+
+name: precompute
+
+on:
+  workflow_dispatch:
+    inputs:
+      scores:
+        description: "Also score the preset stations"
+        type: boolean
+        default: false
+      upload:
+        description: "Copy outputs to R2 (needs the R2_* secrets)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: precompute
+  cancel-in-progress: false
+
+jobs:
+  precompute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt boto3
+      # The previous manifest, so unchanged stores are skipped (no-op without R2).
+      - name: Fetch the current manifest
+        if: ${{ inputs.upload }}
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          python - <<'EOF'
+          import os, boto3, botocore
+          s3 = boto3.client("s3", endpoint_url=os.environ["R2_ENDPOINT"], region_name="auto",
+                            aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+                            aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"])
+          os.makedirs(".precomputed", exist_ok=True)
+          try:
+              s3.download_file(os.environ["R2_BUCKET"], "latest.json", ".precomputed/latest.json")
+          except botocore.exceptions.ClientError:
+              print("no manifest yet")
+          EOF
+      - name: Precompute
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: >
+          python scripts/precompute.py
+          ${{ inputs.scores && '--scores' || '' }}
+          ${{ inputs.upload && '--upload' || '' }}

@@ -1,0 +1,412 @@
+/* asifast shell.
+
+   Colour tokens (--mx-night, -panel, -raise, -ink, -dim, -rule, -warm, -cold,
+   -occl, …) are generated per theme from components/theme_toggle.py and
+   injected in <head>; this file never carries a colour of its own.
+
+   Layout: a left rail (sections and views), the page's control panel, and
+   the canvas with its tool column. Breakpoint 62em matches Mantine's `md`;
+   below it the rail becomes a top bar and the panel stacks above the figure. */
+
+body {
+  margin: 0;
+  background: var(--mx-night);
+  color: var(--mx-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible {
+  outline: 2px solid var(--mx-occl);
+  outline-offset: 2px;
+}
+
+.app {
+  display: flex;
+  min-height: 100vh;
+}
+
+.app-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ---- Rail ---------------------------------------------------------------- */
+
+.rail {
+  flex: 0 0 132px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 0 14px;
+  box-sizing: border-box;
+  background: var(--mx-panel);
+  border-right: 1px solid var(--mx-rule);
+}
+
+.rail-brand {
+  padding: 0 16px 22px;
+  font-family: "Barlow Semi Condensed", sans-serif;
+  font-weight: 600;
+  font-size: 20px;
+  letter-spacing: 0.01em;
+  color: var(--mx-ink);
+  text-decoration: none;
+}
+
+.rail-section {
+  padding-bottom: 18px;
+}
+
+.rail-section-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  font-family: "Barlow Semi Condensed", sans-serif;
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--mx-dim);
+  text-decoration: none;
+}
+
+.rail-section.active .rail-section-link,
+.rail-section-link:hover {
+  color: var(--mx-ink);
+}
+
+/* The front symbols of a synoptic chart: a warm front's semicircle marks
+   Climate, a cold front's triangle marks Weather. */
+.front-mark {
+  flex: 0 0 18px;
+  height: 9px;
+  -webkit-mask: var(--mx-front) left bottom / 18px 9px no-repeat;
+  mask: var(--mx-front) left bottom / 18px 9px no-repeat;
+}
+
+.section-climate .front-mark {
+  background: var(--mx-warm);
+  --mx-front: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 9'%3E%3Crect y='7.5' width='18' height='1.5'/%3E%3Cpath d='M3.5 8 A5.5 5.5 0 0 1 14.5 8 Z'/%3E%3C/svg%3E");
+}
+
+.section-weather .front-mark {
+  background: var(--mx-cold);
+  --mx-front: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 9'%3E%3Crect y='7.5' width='18' height='1.5'/%3E%3Cpath d='M3 8 L9 0.5 L15 8 Z'/%3E%3C/svg%3E");
+}
+
+.rail-view {
+  display: block;
+  padding: 6px 12px 6px 31px;
+  border-left: 3px solid transparent;
+  font-size: 13.5px;
+  line-height: 1.25;
+  color: var(--mx-dim);
+  text-decoration: none;
+}
+
+.rail-view:hover {
+  color: var(--mx-ink);
+  background: var(--mx-raise);
+}
+
+.rail-view.active {
+  color: var(--mx-ink);
+  border-left-color: var(--mx-occl);
+  background: var(--mx-raise);
+  font-weight: 700;
+}
+
+.rail-foot {
+  margin-top: auto;
+  padding: 0 12px;
+}
+
+/* Theme toggle: a sun in dark (switch to light), a moon in light. */
+.theme-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+  background: var(--mx-dim);
+  -webkit-mask: var(--mx-theme-icon) center / contain no-repeat;
+  mask: var(--mx-theme-icon) center / contain no-repeat;
+}
+
+:root {
+  --mx-theme-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='4'/%3E%3Cpath d='M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4'/%3E%3C/svg%3E");
+}
+
+:root[data-mx-theme="light"] {
+  --mx-theme-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z'/%3E%3C/svg%3E");
+}
+
+.theme-toggle:hover .theme-icon {
+  background: var(--mx-ink);
+}
+
+/* ---- Page shell: panel + canvas ------------------------------------------ */
+
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.shell-sidebar {
+  flex: 0 0 340px;
+  width: 340px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  box-sizing: border-box;
+  background: var(--mx-panel);
+  border-right: 1px solid var(--mx-rule);
+}
+
+.view-title {
+  font-family: "Barlow Semi Condensed", sans-serif;
+  font-weight: 600;
+  font-size: 24px;
+  line-height: 1.1;
+  color: var(--mx-ink);
+}
+
+.view-description {
+  max-width: 34em;
+  color: var(--mx-dim);
+}
+
+/* Control groups (Where, What, When, Models): a plain heading, no rule. */
+.panel-heading {
+  margin-top: 6px;
+  font-family: "Barlow Semi Condensed", sans-serif;
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--mx-dim);
+}
+
+.shell-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 18px 20px 24px;
+}
+
+.shell-expand {
+  display: none !important;
+  margin-bottom: var(--mantine-spacing-xs);
+}
+
+.shell.collapsed .shell-sidebar {
+  display: none;
+}
+
+.shell.collapsed .shell-expand {
+  display: inline-flex !important;
+}
+
+.shell-canvas {
+  display: flex;
+  gap: var(--mantine-spacing-sm);
+  align-items: flex-start;
+}
+
+.shell-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.shell-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: sticky;
+  top: 18px;
+}
+
+.shell-canvas:fullscreen {
+  background: var(--mx-night);
+  padding: var(--mantine-spacing-md);
+  overflow: auto;
+}
+
+/* dcc.Clipboard renders its own icon; size it like an ActionIcon. */
+.shell-tool-clipboard {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--mx-rule);
+  border-radius: var(--mantine-radius-sm);
+  color: var(--mx-cold);
+  cursor: pointer;
+}
+
+/* Tool and panel icons: the SVG is a mask, the colour follows the theme. */
+.tool-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+  background: var(--mx-cold);
+  -webkit-mask: var(--mx-icon) center / contain no-repeat;
+  mask: var(--mx-icon) center / contain no-repeat;
+}
+
+/* Figures sit flat on the panel colour; one hairline, no shadow. */
+.mantine-Paper-root {
+  box-shadow: none;
+}
+
+/* ---- Narrow screens ------------------------------------------------------- */
+
+@media (max-width: 62em) {
+  .app {
+    flex-direction: column;
+  }
+
+  .rail {
+    flex: none;
+    position: sticky;
+    z-index: 200;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 12px;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--mx-rule);
+  }
+
+  .rail-brand {
+    padding: 0 12px 0 0;
+    font-size: 18px;
+  }
+
+  .rail-sections {
+    display: flex;
+    gap: 14px;
+  }
+
+  .rail-section {
+    display: flex;
+    align-items: center;
+    padding: 0;
+  }
+
+  .rail-section-link {
+    padding: 4px 6px;
+    font-size: 15px;
+  }
+
+  .rail-views {
+    display: flex;
+  }
+
+  .rail-view {
+    padding: 4px 8px;
+    border-left: none;
+    border-bottom: 3px solid transparent;
+    white-space: nowrap;
+  }
+
+  .rail-view.active {
+    border-bottom-color: var(--mx-occl);
+  }
+
+  .rail-foot {
+    margin: 0 0 0 auto;
+    padding: 0;
+  }
+
+  .shell {
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .shell-sidebar {
+    flex: none;
+    width: 100%;
+    position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--mx-rule);
+  }
+
+  .shell-main {
+    padding: 12px;
+  }
+
+  /* Stretch, or the content shrinks to the plot's intrinsic ~700px. */
+  .shell-canvas {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .shell-toolbar {
+    order: -1;
+    flex-direction: row;
+    position: static;
+  }
+}
+
+/* ---- Maps ------------------------------------------------------------------ */
+
+/* Grey basemap: OSM tiles desaturated, on the tile layer only, so drawn
+   selections, outlines and markers keep their colour. In the dark theme the
+   tiles are inverted to a night map instead of a bright square. */
+.basemap-grey {
+  filter: grayscale(100%) brightness(1.06) contrast(0.88);
+}
+
+:root:not([data-mx-theme="light"]) .basemap-grey {
+  filter: grayscale(100%) invert(92%) brightness(0.85) contrast(0.9);
+}
+
+/* Status bar (assets/status.js): long requests and their stage, bottom right. */
+.status-bar {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 400;
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  max-width: min(440px, calc(100vw - 24px));
+  pointer-events: none;
+}
+.status-bar.is-active { display: flex; }
+.status-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 8px;
+  row-gap: 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--mx-rule);
+  border-radius: 8px;
+  background: var(--mx-raise);
+  color: var(--mx-ink);
+  font-size: 13px;
+  line-height: 1.3;
+}
+.status-label { font-weight: 700; }
+.status-stage { color: var(--mx-dim); overflow-wrap: anywhere; }
+.status-track {
+  grid-column: 1 / -1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--mx-rule);
+  overflow: hidden;
+}
+.status-fill { display: block; height: 100%; background: var(--mx-cold); transition: width 0.3s; }
+.status-done .status-stage { color: var(--mx-ink); }
+.status-failed { border-color: var(--mx-warm); }
+.status-failed .status-stage { color: var(--mx-warm); }
+
+@media (prefers-reduced-motion: reduce) {
+  .status-fill { transition: none; }
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

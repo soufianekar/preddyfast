@@ -1,0 +1,27 @@
+dash>=2.17
+dash-mantine-components>=0.14
+dash-leaflet>=1.0
+openmeteo-requests>=1.3
+requests-cache>=1.2
+retry-requests>=2.0
+requests>=2.31
+pandas>=2.2
+numpy>=1.26
+scipy>=1.13
+# Per-run verification scores are stored as Parquet (utils/scores_db.py).
+pyarrow>=17
+flask-caching>=2.3
+gunicorn>=22.0
+# Gridded ensemble backend (regional page only). Adds ~1 GB to the image.
+icechunk>=1.0
+xarray>=2025.1
+zarr>=3.0
+# Copernicus CDS/ADS backend (maps page only). `cdsapi` speaks to both stores;
+# the NetCDF readers are what xarray needs to open what they return.
+cdsapi>=0.7.4
+netCDF4>=1.7
+h5netcdf>=1.3
+# Static gallery on the maps page: server-rendered PNGs. Coastlines come from
+# the bundled Natural Earth file, so cartopy never downloads shapefiles.
+matplotlib>=3.8
+cartopy>=0.23

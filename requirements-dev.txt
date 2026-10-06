@@ -1,0 +1,14 @@
+# Notebook-only extras. Deliberately not in requirements.txt: none of this
+# ships in the app image.
+-r requirements.txt
+pytest>=8             # tests/ — run with `pytest -q` from the repo root
+jupyterlab>=4.2
+ipywidgets>=8.1
+ipyleaflet>=0.19
+scores>=2.7           # BoM verification library: cross-checks our fair CRPS and Brier
+kaleido>=0.2          # static PNG export from Plotly; HTML export needs nothing
+# Static map prototypes (notebooks/03_static_map_products.ipynb).
+earthkit-plots>=1.0  # pulls in cartopy + matplotlib
+cmocean>=4.0
+# NBM archive access (notebooks/04_nbm_archive.ipynb).
+herbie-data>=2024.8
