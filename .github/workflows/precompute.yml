@@ -13,10 +13,11 @@
 # actions/cache, so only new runs are read from the archives and an init is
 # rescored, as observations arrive, from extracts already on disk.
 #
-# The scorecard fills its 14-day window newest init first, as much as one run
-# allows. To fill it from scratch, dispatch with `backfill` ticked (oldest
-# first, stops cleanly after 300 min) and repeat until a run writes nothing
-# new; each run resumes where the last stopped.
+# The scorecard fills its 14-day window newest init first, as much as 60 min
+# allows per run. To fill it from scratch, dispatch with `backfill` ticked:
+# scorecard only (no animations, no maps), oldest first, stops cleanly after
+# 300 min; repeat until a run writes nothing new. Each run resumes where the
+# last stopped, and the caches are saved even when a run fails.
 #
 #  schedule:
 #    - cron: "30 8 * * *"    # after the 00 UTC runs reach the archive
@@ -32,7 +33,7 @@ on:
         type: boolean
         default: true
       backfill:
-        description: "Scorecard backfill: oldest init first, stop after 300 min (repeat until done)"
+        description: "Scorecard backfill only (no animations or maps): oldest init first, stop after 300 min; repeat until done"
         type: boolean
         default: false
       maps:
@@ -51,8 +52,10 @@ concurrency:
 jobs:
   precompute:
     runs-on: ubuntu-latest
-    # A backfill stops itself at 300 min; the margin lets the upload and the
-    # cache save (skipped when a job times out) still run.
+    # Every scorecard run stops itself between inits (--max-minutes: 300 for a
+    # backfill, 60 otherwise) and writes its aggregates; the Precompute step's
+    # own timeout sits below the job's, so a step that still overruns fails
+    # rather than the job being cancelled, and the always() cache save runs.
     timeout-minutes: ${{ inputs.backfill && 350 || 120 }}
     env:
       PRECOMPUTE_HF_REPO: ${{ vars.PRECOMPUTE_HF_REPO }}
@@ -68,7 +71,9 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - uses: actions/cache@v4
+      # Restore and save are separate so a failed or overrun run still keeps
+      # the extracts and rows it made (actions/cache saves on success only).
+      - uses: actions/cache/restore@v4
         with:
           path: |
             .point-cache
@@ -78,9 +83,22 @@ jobs:
           key: archive-${{ github.run_id }}
           restore-keys: archive-
       - name: Precompute
+        # A backfill is the scorecard only: animations and maps would eat the
+        # 300 min it is given.
+        timeout-minutes: ${{ inputs.backfill && 335 || 110 }}
         run: >
           python scripts/precompute.py
+          ${{ inputs.backfill && '--no-animations' || '' }}
           ${{ (github.event_name == 'schedule' || inputs.scorecard || inputs.backfill) && '--scorecard' || '' }}
-          ${{ inputs.backfill && '--backfill --max-minutes 300' || '' }}
-          ${{ (github.event_name == 'schedule' || inputs.maps) && '--maps' || '' }}
+          ${{ inputs.backfill && '--backfill --max-minutes 300' || '--max-minutes 60' }}
+          ${{ (github.event_name == 'schedule' || (inputs.maps && !inputs.backfill)) && '--maps' || '' }}
           ${{ (github.event_name == 'schedule' || inputs.upload) && '--upload-hf' || '' }}
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            .point-cache
+            .cds-cache
+            .obs-cache
+            .scorecard
+          key: archive-${{ github.run_id }}

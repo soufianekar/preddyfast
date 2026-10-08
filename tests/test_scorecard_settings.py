@@ -104,3 +104,26 @@ def test_derived_wind_speed_is_not_offered_on_the_area_view():
     dash.Dash(__name__, use_pages=True, pages_folder="", suppress_callback_exceptions=True)
     regional = importlib.import_module("pages.regional")
     assert "wind_speed_10m" not in {o["value"] for o in regional._VARIABLE_OPTIONS}
+
+
+def test_derived_wind_speed_from_the_url_falls_back_on_the_area_view():
+    import importlib
+
+    import dash
+
+    dash.Dash(__name__, use_pages=True, pages_folder="", suppress_callback_exceptions=True)
+    regional = importlib.import_module("pages.regional")
+
+    def find(component, cid):
+        if getattr(component, "id", None) == cid:
+            return component
+        children = getattr(component, "children", None)
+        for child in children if isinstance(children, (list, tuple)) else [children]:
+            if child is not None and hasattr(child, "to_plotly_json"):
+                hit = find(child, cid)
+                if hit is not None:
+                    return hit
+        return None
+
+    select = find(regional.layout(variable="wind_speed_10m"), "rg-variable-select")
+    assert select is not None and select.value == "temperature_2m"

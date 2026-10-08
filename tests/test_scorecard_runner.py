@@ -281,6 +281,18 @@ def test_max_minutes_stops_between_inits_and_resumes(env, monkeypatch, tmp_path)
     assert again == SCORECARD_DAYS - n
 
 
+def test_a_run_stopped_by_max_minutes_still_writes_the_aggregates(env, monkeypatch):
+    """The workflow always passes --max-minutes: a cut-short run must publish what it scored."""
+    ticks = iter(range(0, 10_000))
+    monkeypatch.setattr(scorecard, "_clock", lambda: next(ticks) * 30.0)
+    n = scorecard.refresh(("gfs",), VARS, TODAY, max_minutes=2)
+    assert 0 < n < SCORECARD_DAYS
+    loaded = scorecard.load_aggregates()
+    assert loaded is not None
+    agg, meta = loaded
+    assert set(agg["store"]) == {"gfs"} and meta["start"] <= meta["end"]
+
+
 def test_backfill_walks_oldest_first(env):
     scorecard.refresh(("gfs",), VARS, TODAY, backfill=True)
     inits = [c[2] for c in env.calls]
