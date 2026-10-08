@@ -60,7 +60,13 @@ from utils.url_state import parse_bbox, query_choice, query_list
 
 dash.register_page(__name__, path="/regional", title="Forecast for an area · preddyfast")
 
-_VARIABLE_OPTIONS = [{"value": k, "label": v["label"]} for k, v in GRID_VARIABLES.items()]
+# Derived variables (10 m wind speed from u/v) exist for the scorecard's
+# station reads only; the area readers never build them.
+_VARIABLE_OPTIONS = [
+    {"value": k, "label": v["label"]}
+    for k, v in GRID_VARIABLES.items()
+    if "derived_from" not in v
+]
 
 _DEFAULT_VARIABLE = "temperature_2m"
 # Several models may be drawn together, always from the same init (the run

@@ -24,6 +24,7 @@ Two constraints shape the code:
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -33,6 +34,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -60,6 +62,9 @@ from utils.settings import (
 )
 from utils.text import in_sentence
 from utils.variable_family import family_of
+
+if TYPE_CHECKING:
+    import xarray as xr
 
 
 class GridDataError(RuntimeError):
@@ -966,21 +971,54 @@ def check_read_budget(
     bounds: tuple,
     n_inits: int = 1,
     horizon_hours: float | None = None,
+    budget_mb: float | None = None,
 ) -> None:
-    """Refuse a request whose chunk reads exceed `READ_BUDGET_MB`, before reading.
+    """Refuse a request whose chunk reads exceed a budget, before reading.
 
     Only store metadata is consulted. The cost is tiles x inits x models;
     the message states it in MB so the choice of what to drop is informed.
+    `budget_mb` defaults to the interactive `READ_BUDGET_MB`; batch jobs (the
+    station scorecard) pass their own.
     """
     total_chunks, total_mb = read_estimate(stores, bounds, n_inits, horizon_hours)
-    if total_mb > READ_BUDGET_MB:
-        n = len(stores)
+    _refuse_over_budget(total_chunks, total_mb, len(stores), budget_mb)
+
+
+def _refuse_over_budget(
+    total_chunks: int, total_mb: float, n_models: int, budget_mb: float | None
+) -> None:
+    """Raise when `total_mb` exceeds the budget (`None`: `READ_BUDGET_MB`)."""
+    limit = READ_BUDGET_MB if budget_mb is None else budget_mb
+    if total_mb > limit:
+        kind = "interactive limit" if budget_mb is None else "limit for this job"
         raise GridDataError(
-            f"This needs ~{total_mb:,.0f} MB across {n} model"
-            f"{'s' if n != 1 else ''} ({total_chunks} chunks) — over the "
-            f"{READ_BUDGET_MB:,.0f} MB interactive limit. Pick fewer models, "
+            f"This needs ~{total_mb:,.0f} MB across {n_models} model"
+            f"{'s' if n_models != 1 else ''} ({total_chunks} chunks) — over the "
+            f"{limit:,.0f} MB {kind}. Pick fewer models, "
             "fewer runs or a smaller area."
         )
+
+
+def station_read_estimate(store: str, boxes: list[tuple]) -> tuple[int, float]:
+    """`(chunks, MB)` of one init read as the given boxes, summed.
+
+    Each box is costed by `read_estimate` on its own; a variable read from
+    two components (wind) lists its boxes once per component.
+    """
+    total_chunks, total_mb = 0, 0.0
+    for bounds in boxes:
+        chunks, mb = read_estimate((store,), bounds)
+        total_chunks += chunks
+        total_mb += mb
+    return total_chunks, total_mb
+
+
+def check_station_read_budget(
+    store: str, boxes: list[tuple], budget_mb: float | None = None
+) -> None:
+    """Refuse a station read whose boxes together exceed a budget, before reading."""
+    total_chunks, total_mb = station_read_estimate(store, boxes)
+    _refuse_over_budget(total_chunks, total_mb, 1, budget_mb)
 
 
 def area_bounds(area_key: str) -> tuple:
@@ -1298,6 +1336,436 @@ def point_archive(
     if not frames:
         return pd.DataFrame(columns=["init_time", "valid_time", "lead_hours", "member", "value"])
     return pd.concat(frames, ignore_index=True)
+
+
+# 2: read per chunk-tile group (R21) instead of one network bbox.
+_STATION_CUBE_VERSION = 2
+
+
+def _check_station_run_complete(
+    values: np.ndarray, lead_hours: np.ndarray, step_type: str, store: str, variable: str,
+    init: pd.Timestamp,
+) -> None:
+    """Refuse a run with any non-finite value where the store should have one.
+
+    Every station x member value must be finite at every lead > 0. Lead 0 is
+    exempt for step-integrated types (`avg`, `max`, `accum`: no preceding
+    step, NaN by construction) and checked for `instant` fields, which are
+    valid at T+0. IFS ENS writes per spatial tile, so a run in flight has
+    some stations complete and others NaN: caching it would make later
+    rescoring trust the gap for good, and an interior NaN would widen a
+    window's step after `dropna`.
+    """
+    check = lead_hours > 0 if step_type != "instant" else np.ones(lead_hours.shape, bool)
+    bad = ~np.isfinite(values[:, :, check])
+    if not bad.any():
+        return
+    n_leads = int(bad.any(axis=(0, 1)).sum())
+    n_stations = int(bad.any(axis=(1, 2)).sum())
+    _log.warning(
+        "station_cube refused %s %s %s: %d non-finite leads at %d of %d stations",
+        store, variable, f"{init:%Y-%m-%dT%H}", n_leads, n_stations, values.shape[0],
+    )
+    raise GridDataError(
+        f"{GRID_STORES[store]['label']} {variable} {init:%Y-%m-%d %H:%M} UTC is "
+        f"incomplete: {n_leads} lead(s) non-finite at {n_stations} of "
+        f"{values.shape[0]} station(s) — the run may still be written. Not kept."
+    )
+
+
+def _station_cache_path(
+    store: str,
+    variable: str,
+    init: pd.Timestamp,
+    stations: pd.DataFrame,
+    accum_hours: int | None,
+) -> Path:
+    """Disk path for one run's station extract, keyed by the network and window.
+
+    The hash covers station ids, coordinates (4 dp) and the window, so a
+    different network or window never reads a stale file.
+    """
+    key = json.dumps(
+        {
+            "stations": [
+                [str(i), round(float(la), 4), round(float(lo), 4)]
+                for i, la, lo in zip(stations["id"], stations["lat"], stations["lon"], strict=True)
+            ],
+            "accum_hours": accum_hours,
+            # Bump when windowing, scaling or the file layout changes, so an
+            # older extract is never served for the new definition.
+            "v": _STATION_CUBE_VERSION,
+        }
+    )
+    digest = hashlib.sha1(key.encode()).hexdigest()[:12]
+    name = f"{pd.Timestamp(init):%Y%m%d%H}-{digest}.nc"
+    return Path(POINT_CACHE_DIR) / "stations" / store / variable / name
+
+
+def _station_cells(ds, store: str, stations: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Each station's cell in the store's own grid, and which stations have one.
+
+    Snapped as the point reads snap (`round(x / res) * res`, by the store's own
+    spacing), then looked up in the store's coordinates: a snapped point with
+    no grid cell within half a spacing is outside a limited-area domain.
+
+    Returns
+    -------
+    tuple
+        `(kept, rows, cols)`: a boolean mask over `stations`, and the latitude
+        and longitude indices into the store of the kept stations.
+    """
+    res = store_geometry(store)["res_deg"]
+    lat = np.asarray(ds["latitude"].values, dtype=float)
+    lon = np.asarray(ds["longitude"].values, dtype=float)
+    lat_c = np.round(stations["lat"].to_numpy(dtype=float) / res) * res
+    lon_c = ((np.round(stations["lon"].to_numpy(dtype=float) / res) * res + 180.0) % 360.0) - 180.0
+    rows = np.abs(lat[None, :] - lat_c[:, None]).argmin(axis=1)
+    cols = np.abs(lon[None, :] - lon_c[:, None]).argmin(axis=1)
+    kept = (np.abs(lat[rows] - lat_c) < res / 2) & (np.abs(lon[cols] - lon_c) < res / 2)
+    return kept, rows[kept], cols[kept]
+
+
+def _components(variable: str) -> tuple[str, ...]:
+    """The store variables a grid variable is read from: itself, or its components."""
+    return tuple(GRID_VARIABLES[variable].get("derived_from", (variable,)))
+
+
+def _component_step_type(ds, variable: str, components: tuple[str, ...], store: str) -> str:
+    """The store's step type for a variable, checked on every component read."""
+    if components == (variable,):
+        return _require_variable(ds, variable, store)
+    accepted = GRID_VARIABLES[variable].get("accepted_step_types", ("instant",))
+    types = set()
+    for comp in components:
+        if comp not in ds.data_vars:
+            raise GridDataError(
+                f"{GRID_STORES[store]['label']} does not archive {comp}, needed for "
+                f"{in_sentence(GRID_VARIABLES[variable]['label'])}."
+            )
+        types.add(ds[comp].attrs.get("step_type"))
+    if len(types) != 1 or not types <= set(accepted):
+        raise GridDataError(
+            f"The components of '{variable}' are archived with step types "
+            f"{', '.join(sorted(map(str, types)))}, but the app accepts "
+            f"{', '.join(accepted)}. Refusing to combine them."
+        )
+    return types.pop()
+
+
+def _spatial_tile(ds, variable: str, store: str) -> tuple[int, int]:
+    """`(latitude, longitude)` chunk size of a store variable, from its own encoding.
+
+    The zarr array's chunk shape, else the dask chunk size; an array with
+    neither is one tile over the whole grid.
+    """
+    da = ds[variable]
+    deterministic = GRID_STORES[store]["kind"] == "deterministic"
+    if da.encoding.get("chunks"):
+        chunks = _chunk_dims(da.dims, tuple(da.encoding["chunks"]), deterministic)
+    elif da.chunks:
+        chunks = dict(zip(da.dims, da.data.chunksize, strict=True))
+    else:
+        chunks = {}
+    return (
+        int(chunks.get("latitude", ds.sizes["latitude"])),
+        int(chunks.get("longitude", ds.sizes["longitude"])),
+    )
+
+
+def _station_read_boxes(
+    ds, store: str, variable: str, rows: np.ndarray, cols: np.ndarray
+) -> list[tuple[tuple, np.ndarray]]:
+    """The boxes one store variable is read in, and which stations each serves.
+
+    Stations are grouped by the chunk tile their cell falls in (tile =
+    index // chunk size, on the store's own chunking of `variable`); each
+    group is read as the minimal box over its cells. Rule: the group boxes
+    are used when their summed tile count is smaller than the tile count of
+    the single box over every station; on a tie (or fewer) the single box
+    is read — one request for the same chunks. Lead and member blocks
+    multiply both sides alike, so tiles decide.
+
+    Returns
+    -------
+    list of tuple
+        `(bounds, index)`: `bounds` for `_select_box` (a quarter-cell margin
+        around the cells, so float noise never slices off an edge cell
+        without reaching the next), `index` the positions in `rows`/`cols`
+        it serves, ascending.
+    """
+    lat_tile, lon_tile = _spatial_tile(ds, variable, store)
+    lat_all = np.asarray(ds["latitude"].values, dtype=float)
+    lon_all = np.asarray(ds["longitude"].values, dtype=float)
+    pad = store_geometry(store)["res_deg"] / 4.0
+
+    def box(index: np.ndarray) -> tuple:
+        cell_lat, cell_lon = lat_all[rows[index]], lon_all[cols[index]]
+        return (
+            float(cell_lat.min() - pad),
+            float(cell_lat.max() + pad),
+            float(cell_lon.min() - pad),
+            float(cell_lon.max() + pad),
+        )
+
+    keys = np.stack([rows // lat_tile, cols // lon_tile], axis=1)
+    groups = [np.flatnonzero((keys == k).all(axis=1)) for k in np.unique(keys, axis=0)]
+    span = _tiles(
+        (int(rows.min()), int(rows.max())),
+        (int(cols.min()), int(cols.max())),
+        lat_tile,
+        lon_tile,
+    )
+    everyone = np.arange(rows.size)
+    if len(groups) >= span:
+        return [(box(everyone), everyone)]
+    return [(box(index), index) for index in groups]
+
+
+def _read_station_cells(
+    ds, component: str, init: pd.Timestamp, bounds: tuple, rows: np.ndarray, cols: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """One box read of a store variable, cut to the stations' cells.
+
+    Returns `(values, members, lead_hours)`, values `(station, member, lead)`
+    in the store's native units.
+    """
+    da = _select_box(ds, component, init, bounds)
+    da = da.transpose("ensemble_member", "lead_time", "latitude", "longitude")
+    try:
+        box = np.asarray(da.values)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise GridDataError(f"Failed reading the gridded ensemble ({exc}).") from exc
+    # Indices into the box, from the stations' indices into the whole store.
+    lat_all = np.asarray(ds["latitude"].values, dtype=float)
+    lon_all = np.asarray(ds["longitude"].values, dtype=float)
+    lat_box = np.asarray(da["latitude"].values, dtype=float)
+    lon_box = np.asarray(da["longitude"].values, dtype=float)
+    if lat_box[0] > lat_box[-1]:  # stored descending
+        r = np.searchsorted(-lat_box, -lat_all[rows])
+    else:
+        r = np.searchsorted(lat_box, lat_all[rows])
+    c = np.searchsorted(lon_box, lon_all[cols])
+    values = np.moveaxis(box[:, :, r, c], -1, 0)
+    lead = pd.to_timedelta(da["lead_time"].values).total_seconds() / 3600.0
+    return values, np.asarray(da["ensemble_member"].values), np.asarray(lead, dtype=float)
+
+
+def _station_windows(
+    values: np.ndarray, lead_hours: np.ndarray, accum_hours: int, step_type: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """Window totals ending at leads that are multiples of `accum_hours`.
+
+    Built by `climatology.accumulate_over_window` per (station, member); a lead
+    whose window start is not a step is dropped, never reported short.
+    """
+    n_st, n_mem, n_lead = values.shape
+    df = pd.DataFrame(
+        {
+            "station": np.repeat(np.arange(n_st), n_mem * n_lead),
+            "member": np.tile(np.repeat(np.arange(n_mem), n_lead), n_st),
+            "lead_hours": np.tile(lead_hours, n_st * n_mem),
+            "value": values.reshape(-1),
+        }
+    ).dropna(subset=["value"])
+    out = accumulate_over_window(
+        df, accum_hours, step_type=step_type, group_cols=("station", "member")
+    )
+    out = out[np.isclose(out["lead_hours"] % accum_hours, 0.0)]
+    leads = np.sort(out["lead_hours"].unique())
+    cube = np.full((n_st, n_mem, len(leads)), np.nan)
+    cube[
+        out["station"].to_numpy(),
+        out["member"].to_numpy(),
+        np.searchsorted(leads, out["lead_hours"].to_numpy()),
+    ] = out["value"].to_numpy()
+    return cube, leads
+
+
+def _load_station_cube(path: Path) -> xr.DataArray:
+    import xarray as xr  # function-local, as in `_open_dataset`
+
+    cube = xr.load_dataarray(path)
+    # netCDF has no None: absent attrs were None when written.
+    attrs = cube.attrs
+    attrs["window_hours"] = int(attrs["window_hours"]) if "window_hours" in attrs else None
+    attrs["dropped_outside_domain"] = int(attrs["dropped_outside_domain"])
+    attrs["res_deg"] = float(attrs["res_deg"])
+    return cube
+
+
+def _save_station_cube(cube: xr.DataArray, path: Path) -> None:
+    """Write atomically (tmp + replace); None attrs are left out."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out = cube.copy()
+    out.attrs = {k: v for k, v in cube.attrs.items() if v is not None}
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.part")
+    out.to_netcdf(tmp, engine="netcdf4")
+    tmp.replace(path)
+
+
+def station_cube(
+    store: str,
+    variable: str,
+    init: pd.Timestamp,
+    stations: pd.DataFrame,
+    accum_hours: int | None,
+    budget_mb: float | None = None,
+) -> xr.DataArray:
+    """One run of one store at every station's grid cell, read by chunk tile.
+
+    Stations are grouped by the store's chunk tile their cell falls in and
+    each group is read once as the minimal box over its cells — never a read
+    per station (which would download a shared tile once per station), and
+    never the whole network's bounding box when the stations are scattered
+    (8 European cities would read all of Europe). A dense network whose
+    bounding box touches no more tiles than the groups do is read as that
+    one box (`_station_read_boxes` states the rule). The nearest cell in the store's
+    own grid is used: no interpolation, no height correction, and no
+    land-sea screen (no store archives a mask), so a coastal cell may be
+    partly sea.
+
+    Kept on disk under `POINT_CACHE_DIR/stations/<store>/<variable>/`, keyed
+    by init, station list and window: a repeat call opens nothing. A view
+    store (IFS Control) is cut from its source's cube, so both share one file
+    and one read.
+
+    Parameters
+    ----------
+    store : str
+        `GRID_STORES` key.
+    variable : str
+        `GRID_VARIABLES` key. A variable with `derived_from` (10 m wind
+        speed) is built per member from its components: √(u² + v²) of each
+        member, never the speed of the mean wind.
+    init : pd.Timestamp
+        Init time (naive UTC).
+    stations : pd.DataFrame
+        Columns `id`, `lat`, `lon`.
+    accum_hours : int or None
+        Window for an accumulated variable. Totals over `(L - P, L]` are
+        built from the store's own step type and kept only at leads that are
+        multiples of `P` (00/06/12/18 UTC for a 00 UTC run and P = 6); a lead
+        whose window start is not a step is dropped. `None` for instants.
+    budget_mb : float or None
+        Read budget for `check_station_read_budget`, which costs the boxes
+        actually read (every component's); `None` is the interactive
+        `READ_BUDGET_MB`. Checked once per call, before any read, and only
+        when the extract is not already on disk.
+
+    Returns
+    -------
+    xarray.DataArray
+        Dims `(station, member, lead_hours)` in display units (`accum_unit`
+        for a window total). Coords: `station` (ids), `member`, `lead_hours`,
+        `valid_time` along `lead_hours` (naive UTC), `lat`/`lon` of the cell
+        used along `station`. Attrs: `init` (ISO), `store`, `variable`,
+        `window_hours` (int or None), `step_type` (the store's own),
+        `dropped_outside_domain` (stations with no cell in a limited-area
+        store), `res_deg`, `unit`.
+
+    Raises
+    ------
+    GridDataError
+        Unknown variable, a variable or init the store lacks, no station in
+        the domain, the read over budget, or an incomplete run: any
+        non-finite value at a lead > 0 (and at T+0 for an instant field)
+        refuses the whole run and writes nothing. A store whose lead axis ran
+        past an init's own horizon would therefore be refused for that init —
+        acceptable for the 00 UTC-only scorecard; the refusal is logged with
+        its counts so a systematic case is diagnosable.
+    """
+    import xarray as xr  # function-local, as in `_open_dataset`
+
+    if variable not in GRID_VARIABLES:
+        raise GridDataError(f"Unknown grid variable '{variable}'.")
+    meta_var = GRID_VARIABLES[variable]
+    if accum_hours and not meta_var.get("is_accumulated"):
+        raise GridDataError(
+            f"'{variable}' is not an accumulated variable — it cannot be totalled over a window."
+        )
+    init = pd.Timestamp(init)
+
+    source = GRID_STORES[store].get("source_store")
+    if source:
+        base = station_cube(source, variable, init, stations, accum_hours, budget_mb)
+        member = GRID_STORES[store]["member"]
+        view = base.sel(member=[member])
+        view.attrs = {**base.attrs, "store": store}
+        return view
+
+    path = _station_cache_path(store, variable, init, stations, accum_hours)
+    if path.exists():
+        return _load_station_cube(path)
+
+    ds = _open_dataset(store)
+    components = _components(variable)
+    step_type = _component_step_type(ds, variable, components, store)
+
+    kept, rows, cols = _station_cells(ds, store, stations)
+    dropped = int((~kept).sum())
+    if not kept.any():
+        raise GridDataError(f"No station lies inside the {GRID_STORES[store]['label']} domain.")
+    lat_all = np.asarray(ds["latitude"].values, dtype=float)
+    lon_all = np.asarray(ds["longitude"].values, dtype=float)
+    cell_lat, cell_lon = lat_all[rows], lon_all[cols]
+    plans = {comp: _station_read_boxes(ds, store, comp, rows, cols) for comp in components}
+    # One budget check per call, for exactly the boxes read: every component's.
+    check_station_read_budget(
+        store, [bounds for plan in plans.values() for bounds, _ in plan], budget_mb=budget_mb
+    )
+
+    parts = []
+    for comp in components:
+        values = None
+        for bounds, index in plans[comp]:
+            got, members, lead_hours = _read_station_cells(
+                ds, comp, init, bounds, rows[index], cols[index]
+            )
+            if values is None:
+                values = np.full((rows.size, *got.shape[1:]), np.nan)
+            values[index] = got
+        parts.append(values)
+    if len(parts) == 1:
+        values = parts[0]
+    else:
+        values = np.sqrt(sum(p**2 for p in parts))
+    _check_station_run_complete(values, lead_hours, step_type, store, variable, init)
+    values = values * meta_var["scale"] + meta_var["offset"]
+    unit = meta_var["unit"]
+    if accum_hours:
+        values, lead_hours = _station_windows(values, lead_hours, accum_hours, step_type)
+        if lead_hours.size == 0:
+            raise GridDataError(
+                f"No lead time in this run carries a complete {accum_hours} h accumulation."
+            )
+        unit = meta_var.get("accum_unit", unit)
+
+    cube = xr.DataArray(
+        values.astype("float32"),
+        dims=("station", "member", "lead_hours"),
+        coords={
+            "station": stations["id"].astype(str).to_numpy()[kept],
+            "member": members.astype(int),
+            "lead_hours": lead_hours,
+            "valid_time": ("lead_hours", init + pd.to_timedelta(lead_hours, unit="h")),
+            "lat": ("station", cell_lat),
+            "lon": ("station", cell_lon),
+        },
+        name=variable,
+        attrs={
+            "init": init.isoformat(),
+            "store": store,
+            "variable": variable,
+            "window_hours": int(accum_hours) if accum_hours else None,
+            "step_type": step_type,
+            "dropped_outside_domain": dropped,
+            "res_deg": float(store_geometry(store)["res_deg"]),
+            "unit": unit,
+        },
+    )
+    _save_station_cube(cube, path)
+    return cube
 
 
 # Shown for a past run when nothing archive-backed is selected.

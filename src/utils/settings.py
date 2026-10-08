@@ -648,6 +648,18 @@ GRID_VARIABLES: dict[str, dict] = {
         # Maximum gust over the preceding step, not an instantaneous value.
         "accepted_step_types": ("max",),
     },
+    "wind_speed_10m": {
+        # Not a store variable: √(u² + v²) per member from the raw components,
+        # so an ensemble's wind speed is scored member by member.
+        "derived_from": ("wind_u_10m", "wind_v_10m"),
+        "palette": "default_gust",
+        "label": "Wind Speed (10 m)",
+        "unit": "m/s",
+        "native_unit": "m s-1",
+        "scale": 1.0,
+        "offset": 0.0,
+        "accepted_step_types": ("instant",),
+    },
     "pressure_reduced_to_mean_sea_level": {
         # Default style for static maps (see MAP_PALETTES).
         "palette": "default_msl",
@@ -1759,6 +1771,10 @@ PRECOMPUTE_DIR: str = os.environ.get("PRECOMPUTE_DIR", ".precomputed")
 # Per-run verification scores (utils/scores_db.py), kept for good. Inside the
 # precomputed tree, so one upload and one mirror carry them (utils/hub_sync.py).
 SCORES_DIR: str = os.environ.get("SCORES_DIR", f"{PRECOMPUTE_DIR}/scores")
+# The station scorecard job's working state (per-init rows, frozen network,
+# window). Outside PRECOMPUTE_DIR: never uploaded; the workflow keeps it with
+# actions/cache. Only its aggregates file is published (utils/scorecard.py).
+SCORECARD_DIR: str = os.environ.get("SCORECARD_DIR", ".scorecard")
 # The public Hugging Face Dataset the scheduled job uploads to and the app
 # mirrors metadata from ("user/name"); unset for a purely local run.
 PRECOMPUTE_HF_REPO: str = os.environ.get("PRECOMPUTE_HF_REPO", "")
@@ -1803,6 +1819,9 @@ GHCNH_FIELDS: dict[str, str] = {
     "dew_point_temperature": "dew_point_temperature_2m",
     "sea_level_pressure": "pressure_reduced_to_mean_sea_level",
     "wind_gust": "wind_gust_10m",
+    # Mean of the last ~10 min before the report, m/s: an instant, like the
+    # model's 10 m wind.
+    "wind_speed": "wind_speed_10m",
     "precipitation": "precipitation_1h",
     # SYNOP-style totals over the window ending at the report (e.g. DWD's
     # 06–06 UTC daily total at 06 UTC); verifiable where hourly reports have gaps.
@@ -1869,6 +1888,132 @@ ANALYSIS_STORES: dict[str, dict] = {
         "res_deg": 0.1,
         "step_seconds": 1800,
     },
+}
+# Station scorecard: archived runs at GHCNh stations over a rolling window of 00 UTC inits. Stores are compared, never pooled.
+SCORECARD_STORES: tuple[str, ...] = (
+    "ifs_ens", "aifs_ens", "gefs", "ifs_control", "aifs_single", "gfs", "icon_eu",
+)
+# 14 inits, anchored on the GHCNh observation end rather than today (the feed
+# lags ~6 days; see scorecard._window).
+SCORECARD_DAYS: int = 14
+SCORECARD_INIT_HOUR: int = 0
+SCORECARD_MAX_STATIONS: int = 200
+# GHCNh's ISO_CODE column is ISO 3166-1 alpha-2: Germany is "DE". ("GM" would
+# be Gambia; FIPS uses GM for Germany.)
+SCORECARD_COUNTRY: str = "DE"
+SCORECARD_PERIODS: tuple[int, ...] = (7, 14)
+# Fixed network: major European city airports with a 2026 GHCNh file and
+# >= 0.96 temperature/wind completeness over 16-30 Sep 2026. London Heathrow,
+# Paris Charles de Gaulle, Berlin Brandenburg, Madrid Barajas, Rome Fiumicino,
+# Vienna Schwechat, Athens Eleftherios Venizelos, Istanbul Airport. Warsaw,
+# Stockholm, Amsterdam and Copenhagen have no 2026 GHCNh file; the DWD national
+# network reaches GHCNh about a year late, so SCORECARD_COUNTRY stations are
+# unusable for a current window. Empty: the general mode (country + thinning).
+SCORECARD_STATIONS: tuple[str, ...] = (
+    "UKI0000EGLL", "FRI0000LFPG", "GMI0000EDDB", "SPMU0098221",
+    "ITMU0016242", "AUI0000LOWW", "GRI0000LGAV", "TUI0000LTFM",
+)
+# Precipitation enters the card for a fixed-list station at this share of its
+# 6 h windows (Heathrow 0.55; the rest 0-0.3), instead of the variable's own
+# `completeness`. Not used in the general mode.
+SCORECARD_FIXED_PRECIP_COMPLETENESS: float = 0.5
+# Every store is scored to 15 days at most (GEFS 16-35 d is not scored).
+SCORECARD_MAX_LEAD_HOURS: int = 360
+# When observations count as "in" for marking an init complete: the median of
+# each station's last report, over stations that reported in the
+# SCORECARD_OBS_RECENT_DAYS before the newest report, minus a grace for
+# stations whose data arrive late. A stopped station or one bad timestamp
+# cannot move it; an init with leads past it is rescored when more arrive.
+SCORECARD_OBS_RECENT_DAYS: int = 7
+SCORECARD_OBS_GRACE_HOURS: int = 48
+# Read budget for one station_cube call in the scheduled job (the interactive
+# READ_BUDGET_MB would refuse it): the eight stations read one chunk tile
+# each, ~0.4 GB per IFS ENS variable and init, and wind reads two components;
+# 1000 MB still stops a mistyped network or store from reading gigabytes.
+SCORECARD_READ_BUDGET_MB: float = 1000.0
+# Raw store components a derived GRID_VARIABLES entry may be built from. They
+# are not GRID_VARIABLES entries of their own; every scorecard store holds them
+# (measured 2026-10-06 for ifs_ens, aifs_ens, aifs_single, gefs, gfs, icon_eu).
+STORE_RAW_COMPONENTS: tuple[str, ...] = ("wind_u_10m", "wind_v_10m")
+# Per variable: `grid` the GRID_VARIABLES key(s) read, `obs` the GHCNh-derived
+# column (None: verified against `reference` only), `window_hours` the
+# accumulation window (None for instants), `threshold` the event threshold in
+# the display unit, `scores` what is computed, `completeness` the share of
+# 00/06/12/18 UTC synoptic hours (or windows) a station must report to enter
+# the card, `obs_reported` the column of station-reported window totals
+# (None: not applicable), `tolerance` the obs-to-valid-time match, `reference` what verifies.
+SCORECARD_VARIABLES: dict[str, dict] = {
+    "temperature_2m": {
+        "label": "2 m temperature",
+        "unit": "°C",
+        "grid": ("temperature_2m",),
+        "obs": "temperature_2m",
+        "obs_reported": None,
+        "window_hours": None,
+        "threshold": None,
+        "scores": ("rmse", "mae", "bias", "crps", "rmse_bc", "mae_bc", "spread_skill"),
+        "completeness": 0.90,
+        "tolerance": "15min",
+        "reference": "stations",
+    },
+    "precipitation_6h": {
+        "label": "6 h precipitation",
+        "unit": "mm",
+        "grid": ("precipitation_surface",),
+        # Policy: reported 6 h totals first (`obs_reported`), else sums of
+        # complete hourly reports (`obs`).
+        "obs": "precipitation_1h",
+        "obs_reported": "precip_total_6h",
+        "window_hours": 6,
+        # 0.1 mm/h (the usual "wet hour") over a 6 h window.
+        "threshold": 0.1 * 6,
+        "scores": ("mae", "bias", "crps", "ets", "hss", "frequency_bias", "brier"),
+        "completeness": 0.80,
+        "tolerance": None,
+        "reference": "stations",
+    },
+    "wind_speed_10m": {
+        "label": "10 m wind speed",
+        "unit": "m/s",
+        "grid": ("wind_speed_10m",),
+        "obs": "wind_speed_10m",
+        "obs_reported": None,
+        "window_hours": None,
+        "threshold": None,
+        "scores": ("rmse", "mae", "bias", "crps"),
+        "completeness": 0.85,
+        "tolerance": "15min",
+        "reference": "stations",
+    },
+    # No station observes it: IFS control T+0 is the pseudo-analysis.
+    "z500": {
+        "label": "500 hPa geopotential height",
+        "unit": "m",
+        "grid": ("geopotential_height_500hpa",),
+        "obs": None,
+        "obs_reported": None,
+        "window_hours": None,
+        "threshold": None,
+        "scores": ("rmse", "bias", "crps"),
+        "completeness": None,
+        "tolerance": None,
+        "reference": "control_t0",
+    },
+}
+# How each score is judged, shared by `relative_to` and the scorecard figures:
+# "lower" / "higher" is better, a number is the ideal value (closer is better).
+SCORE_DIRECTION: dict[str, str | float] = {
+    "rmse": "lower",
+    "mae": "lower",
+    "crps": "lower",
+    "brier": "lower",
+    "rmse_bc": "lower",
+    "mae_bc": "lower",
+    "ets": "higher",
+    "hss": "higher",
+    "bias": 0.0,
+    "frequency_bias": 1.0,
+    "spread_skill": 1.0,
 }
 EVAL_LEAD_STEPS: tuple[int, ...] = (6, 12, 24)
 EVAL_LEAD_STEP_DEFAULT: int = 24

@@ -42,6 +42,10 @@ class ObservationError(RuntimeError):
     """An observation file could not be fetched or read; message is user-facing."""
 
 
+class ObservationNotFound(ObservationError):
+    """GHCNh has no file there (HTTP 404), as opposed to being unreachable."""
+
+
 def _cached_download(url: str, path: Path, max_age_h: float | None) -> Path:
     """Download `url` to `path` unless a copy younger than `max_age_h` exists.
 
@@ -58,7 +62,7 @@ def _cached_download(url: str, path: Path, max_age_h: float | None) -> Path:
             tmp.write_bytes(resp.read())
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            raise ObservationError(f"GHCNh has no file at {url}.") from exc
+            raise ObservationNotFound(f"GHCNh has no file at {url}.") from exc
         raise ObservationError(f"GHCNh download failed ({exc.code}).") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         if path.exists():
@@ -154,7 +158,8 @@ def fetch_station_year(station_id: str, year: int) -> pd.DataFrame:
     pd.DataFrame
         `valid_time` (UTC) plus one column per `GHCNH_FIELDS` value
         (`temperature_2m`, …, `precipitation_1h`); NaN where not reported or
-        dropped by quality control.
+        dropped by quality control. Each also has `<name>_report_type`
+        (GHCNh `<field>_Report_Type`, e.g. "FM-12" SYNOP, "FM-15" METAR).
     """
     current = year >= pd.Timestamp.now(tz="UTC").year
     path = _cached_download(
@@ -169,6 +174,7 @@ def fetch_station_year(station_id: str, year: int) -> pd.DataFrame:
             f"{field}_Quality_Code",
             f"{field}_Measurement_Code",
             f"{field}_Source_Code",
+            f"{field}_Report_Type",
         ]
     try:
         raw = pd.read_csv(
@@ -194,6 +200,13 @@ def fetch_station_year(station_id: str, year: int) -> pd.DataFrame:
             raw.get(f"{field}_Quality_Code", none), raw.get(f"{field}_Source_Code", none)
         )
         out[name] = values.mask(flagged)
+        # Report type per value (FM-12 SYNOP, FM-15/16 METAR, …); "" if absent.
+        out[f"{name}_report_type"] = (
+            raw.get(f"{field}_Report_Type", pd.Series("", index=raw.index))
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
     return out.sort_values("valid_time").reset_index(drop=True)
 
 
