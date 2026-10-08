@@ -7,8 +7,9 @@ newest finished run, so running it hourly costs a few metadata reads.
 
     python scripts/precompute.py --estimate          # MB per store/region, reads nothing
     python scripts/precompute.py                     # all preset stores, animations only
-    python scripts/precompute.py --no-animations --scorecard   # station scorecard, newest inits first
-    python scripts/precompute.py --no-animations --scorecard --backfill --max-minutes 300
+    python scripts/precompute.py --no-animations --scorecard   # newest inits first
+    python scripts/precompute.py --no-animations --scorecard --backfill \
+        --max-minutes 300
     python scripts/precompute.py --no-animations --maps   # ERA5 maps gallery (needs CDS)
     python scripts/precompute.py --upload-hf         # then publish to the HF Dataset
 
@@ -59,19 +60,44 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--estimate", action="store_true", help="print read volumes and exit")
     parser.add_argument("--force", action="store_true", help="re-render runs already done")
     parser.add_argument("--no-animations", action="store_true")
-    parser.add_argument("--scorecard", action="store_true",
-                        help="refresh the station scorecard (rolling window) and its aggregates")
-    parser.add_argument("--backfill", action="store_true",
-                        help="scorecard: walk the window oldest init first")
-    parser.add_argument("--max-minutes", type=float, default=None,
-                        help="scorecard: stop cleanly between inits after this long; rerun to resume")
-    parser.add_argument("--reselect", action="store_true",
-                        help="scorecard: select a new station network (re-reads every init)")
-    parser.add_argument("--aggregates-only", action="store_true",
-                        help="rebuild only the scorecard aggregates file from stored rows")
-    parser.add_argument("--maps", nargs="*", metavar="ITEM", help="draw the ERA5 maps gallery (all, or these items)")
-    parser.add_argument("--upload", action="store_true", help="copy outputs to R2 afterwards")
-    parser.add_argument("--upload-hf", action="store_true", help="publish outputs to PRECOMPUTE_HF_REPO")
+    parser.add_argument(
+        "--scorecard",
+        action="store_true",
+        help="refresh the station scorecard (rolling window) and its aggregates",
+    )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="scorecard: walk the window oldest init first",
+    )
+    parser.add_argument(
+        "--max-minutes",
+        type=float,
+        default=None,
+        help="scorecard: stop cleanly between inits after this long; rerun to resume",
+    )
+    parser.add_argument(
+        "--reselect",
+        action="store_true",
+        help="scorecard: select a new station network (re-reads every init)",
+    )
+    parser.add_argument(
+        "--aggregates-only",
+        action="store_true",
+        help="rebuild only the scorecard aggregates file from stored rows",
+    )
+    parser.add_argument(
+        "--maps",
+        nargs="*",
+        metavar="ITEM",
+        help="draw the ERA5 maps gallery (all, or these items)",
+    )
+    parser.add_argument(
+        "--upload", action="store_true", help="copy outputs to R2 afterwards"
+    )
+    parser.add_argument(
+        "--upload-hf", action="store_true", help="publish outputs to PRECOMPUTE_HF_REPO"
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
@@ -131,7 +157,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 _log.info("scorecard: %d init files written", wrote)
             except scorecard.ObservationError as exc:
-                # GHCNh unreachable: keep the published scorecard, still publish the rest.
+                # GHCNh unreachable: keep the published scorecard, still publish
+                # the rest.
                 _log.error("scorecard not refreshed: %s", exc)
         if args.maps is not None:
             from utils import map_gallery
@@ -139,7 +166,8 @@ def main(argv: list[str] | None = None) -> int:
             drawn = map_gallery.refresh(force=args.force, keys=args.maps or None)
             _log.info("maps gallery: %d images written", drawn)
         if args.upload:
-            # The scorecard aggregates live under PRECOMPUTE_DIR, so the tree carries them.
+            # The scorecard aggregates live under PRECOMPUTE_DIR, so the tree
+            # carries them.
             sent = precomputed.upload(_r2_client(), os.environ["R2_BUCKET"])
             _log.info("uploaded %d files", sent)
         if args.upload_hf:

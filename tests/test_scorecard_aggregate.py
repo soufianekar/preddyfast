@@ -110,14 +110,15 @@ def test_relative_to_lower_rmse_and_higher_ets_are_positive():
 
 
 def test_lead_day_bin_under_min_n_is_flagged():
+    inits = [NEWEST - pd.Timedelta(days=d) for d in range(5)]  # >= SCORECARD_MIN_INITS
     rows = pd.concat([
-        _err_rows(1.0, stations=[f"S{i}" for i in range(49)], leads=(24.0,)),
-        _err_rows(1.0, stations=[f"S{i}" for i in range(50)], leads=(48.0,)),
+        _err_rows(1.0, inits=inits, stations=[f"S{i}" for i in range(9)], leads=(24.0,)),
+        _err_rows(1.0, inits=inits, stations=[f"S{i}" for i in range(10)], leads=(48.0,)),
     ])
     agg = scorecard.aggregate(rows, 7)
     assert bool(_one(agg, lead_day=1)["low_n"]) is True
     assert bool(_one(agg, lead_day=2)["low_n"]) is False
-    assert _one(agg, lead_day=1)["n"] == 49
+    assert _one(agg, lead_day=1)["n"] == 45
 
 
 # --- task extras ---------------------------------------------------------------
@@ -261,3 +262,64 @@ def test_relative_to_negative_baseline_keeps_sign():
     assert _one(rel, store="gefs")["crps"] == pytest.approx(100.0)
     worse = agg.assign(crps=[-0.1, 0.0])
     assert _one(scorecard.relative_to(worse), store="gefs")["crps"] == pytest.approx(-100.0)
+
+
+# --- final review: R23 lead step, R24 run count -----------------------------------
+
+
+def test_hourly_and_six_hourly_stores_give_the_same_lead_set_per_bin():
+    """R23: a lead-day bin holds the same valid hours whatever the store's step."""
+    hourly = np.arange(1.0, 49.0)
+    three = np.arange(3.0, 49.0, 3.0)
+    six = np.arange(6.0, 49.0, 6.0)
+    rows = pd.concat([
+        _err_rows(1.0, store="gfs", leads=hourly),
+        _err_rows(1.0, store="ifs_ens", leads=three),
+        _err_rows(1.0, store="aifs_ens", leads=six),
+    ])
+    agg = scorecard.aggregate(rows, 7, min_n=1)
+    for day in (1, 2):
+        n = agg[agg["lead_day"] == day].set_index("store")["n"]
+        assert n.to_dict() == {"aifs_ens": 4, "gfs": 4, "ifs_ens": 4}, day
+
+
+def test_bias_offset_is_computed_on_the_six_hourly_leads_only():
+    """Off-step leads (err 5) never enter the station offset, so rmse_bc is 0."""
+    leads = np.arange(1.0, 25.0)
+    err = np.where(leads % 6 == 0, 2.0, 5.0)
+    rows = _err_rows(np.tile(err, 2), stations=("A", "B"), leads=leads)
+    row = _one(scorecard.aggregate(rows, 7, min_n=1), lead_day=1)
+    assert row["n"] == 8
+    assert row["rmse"] == pytest.approx(2.0)
+    assert row["rmse_bc"] == pytest.approx(0.0)
+
+
+def test_cells_on_fewer_than_min_inits_runs_are_flagged():
+    """R24: many pairs on few runs are still low_n."""
+    stations = [f"S{i}" for i in range(100)]
+    few = [NEWEST - pd.Timedelta(days=d) for d in range(4)]
+    enough = [NEWEST - pd.Timedelta(days=d) for d in range(5)]
+    low = _one(scorecard.aggregate(_err_rows(1.0, inits=few, stations=stations), 7),
+               lead_day=1)
+    ok = _one(scorecard.aggregate(_err_rows(1.0, inits=enough, stations=stations), 7),
+              lead_day=1)
+    assert low["n"] == 400 and low["n_inits"] == 4 and bool(low["low_n"]) is True
+    assert ok["n_inits"] == 5 and bool(ok["low_n"]) is False
+
+
+def test_lead_zero_z500_rows_and_control_self_pairs_never_reach_the_aggregates():
+    """T+0 Z500 vs IFS control T+0 is the control against itself (err 0): it
+    must never enter a bin."""
+    leads = (0.0, 24.0)
+    rows = pd.concat([
+        _err_rows([0.0, 2.0], store="ifs_control", variable="z500",
+                  leads=leads),
+        _err_rows([1.0, 2.0], store="ifs_ens", variable="z500",
+                  leads=leads),
+    ])
+    agg = scorecard.aggregate(rows, 7, min_n=1)
+    assert sorted(agg["lead_day"].unique()) == [1]
+    ctrl = _one(agg, store="ifs_control", lead_day=1)
+    assert ctrl["n"] == 1 and ctrl["bias"] == pytest.approx(2.0)
+    assert ctrl["rmse"] == pytest.approx(2.0)
+    assert (agg["n"] == 1).all()  # no lead-0 pair of either store counted

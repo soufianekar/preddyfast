@@ -1887,9 +1887,16 @@ ANALYSIS_STORES: dict[str, dict] = {
         "step_seconds": 1800,
     },
 }
-# Station scorecard: archived runs at GHCNh stations over a rolling window of 00 UTC inits. Stores are compared, never pooled.
+# Station scorecard: archived runs at GHCNh stations over a rolling window of
+# 00 UTC inits. Stores are compared, never pooled.
 SCORECARD_STORES: tuple[str, ...] = (
-    "ifs_ens", "aifs_ens", "gefs", "ifs_control", "aifs_single", "gfs", "icon_eu",
+    "ifs_ens",
+    "aifs_ens",
+    "gefs",
+    "ifs_control",
+    "aifs_single",
+    "gfs",
+    "icon_eu",
 )
 # 14 inits, anchored on the GHCNh observation end rather than today (the feed
 # lags ~6 days; see scorecard._window).
@@ -1908,8 +1915,14 @@ SCORECARD_PERIODS: tuple[int, ...] = (7, 14)
 # network reaches GHCNh about a year late, so SCORECARD_COUNTRY stations are
 # unusable for a current window. Empty: the general mode (country + thinning).
 SCORECARD_STATIONS: tuple[str, ...] = (
-    "UKI0000EGLL", "FRI0000LFPG", "GMI0000EDDB", "SPMU0098221",
-    "ITMU0016242", "AUI0000LOWW", "GRI0000LGAV", "TUI0000LTFM",
+    "UKI0000EGLL",
+    "FRI0000LFPG",
+    "GMI0000EDDB",
+    "SPMU0098221",
+    "ITMU0016242",
+    "AUI0000LOWW",
+    "GRI0000LGAV",
+    "TUI0000LTFM",
 )
 # Precipitation enters the card for a fixed-list station at this share of its
 # 6 h windows (Heathrow 0.55; the rest 0-0.3), instead of the variable's own
@@ -1917,6 +1930,14 @@ SCORECARD_STATIONS: tuple[str, ...] = (
 SCORECARD_FIXED_PRECIP_COMPLETENESS: float = 0.5
 # Every store is scored to 15 days at most (GEFS 16-35 d is not scored).
 SCORECARD_MAX_LEAD_HOURS: int = 360
+# Aggregates keep only leads on this step (R23): 00/06/12/18 UTC valid times
+# for 00 UTC runs, the coarsest common step (AIFS). Hourly GFS/ICON-EU and
+# 3-hourly IFS ENS/GEFS would otherwise fill a lead-day bin with different
+# hours of the diurnal cycle. Stored pair rows keep every lead.
+SCORECARD_LEAD_STEP_HOURS: int = 6
+# A cell resting on fewer runs than this is flagged like one with too few
+# pairs (R24): long leads of a window ending at the last observation have few.
+SCORECARD_MIN_INITS: int = 5
 # When observations count as "in" for marking an init complete: the median of
 # each station's last report, over stations that reported in the
 # SCORECARD_OBS_RECENT_DAYS before the newest report, minus a grace for
@@ -1939,7 +1960,8 @@ STORE_RAW_COMPONENTS: tuple[str, ...] = ("wind_u_10m", "wind_v_10m")
 # the display unit, `scores` what is computed, `completeness` the share of
 # 00/06/12/18 UTC synoptic hours (or windows) a station must report to enter
 # the card, `obs_reported` the column of station-reported window totals
-# (None: not applicable), `tolerance` the obs-to-valid-time match, `reference` what verifies.
+# (None: not applicable), `tolerance` the obs-to-valid-time match, `reference`
+# what verifies.
 SCORECARD_VARIABLES: dict[str, dict] = {
     "temperature_2m": {
         "label": "2 m temperature",

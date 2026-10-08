@@ -101,7 +101,9 @@ def test_derived_wind_speed_is_not_offered_on_the_area_view():
 
     import dash
 
-    dash.Dash(__name__, use_pages=True, pages_folder="", suppress_callback_exceptions=True)
+    dash.Dash(
+        __name__, use_pages=True, pages_folder="", suppress_callback_exceptions=True
+    )
     regional = importlib.import_module("pages.regional")
     assert "wind_speed_10m" not in {o["value"] for o in regional._VARIABLE_OPTIONS}
 
@@ -111,7 +113,9 @@ def test_derived_wind_speed_from_the_url_falls_back_on_the_area_view():
 
     import dash
 
-    dash.Dash(__name__, use_pages=True, pages_folder="", suppress_callback_exceptions=True)
+    dash.Dash(
+        __name__, use_pages=True, pages_folder="", suppress_callback_exceptions=True
+    )
     regional = importlib.import_module("pages.regional")
 
     def find(component, cid):
@@ -127,3 +131,18 @@ def test_derived_wind_speed_from_the_url_falls_back_on_the_area_view():
 
     select = find(regional.layout(variable="wind_speed_10m"), "rg-variable-select")
     assert select is not None and select.value == "temperature_2m"
+
+
+def test_archived_listing_omits_derived_variables():
+    """A past-run refusal lists only what the archive stores, not derived wind."""
+    import pytest
+
+    from utils import earthmover_api as em
+
+    with pytest.raises(em.GridDataError) as err:
+        em.archive_meteogram(
+            48.85, 2.35, "wind_speed_10m_max", "2026-10-01T00:00", 2, None
+        )
+    text = str(err.value)
+    assert settings.GRID_VARIABLES["temperature_2m"]["label"] in text
+    assert settings.GRID_VARIABLES["wind_speed_10m"]["label"] not in text

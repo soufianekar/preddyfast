@@ -191,3 +191,88 @@ def test_empty_tables_give_the_empty_figure(kind, wrong_variable):
     }[kind]()
     assert not fig.data
     assert "No data available" in [a.text for a in fig.layout.annotations]
+
+
+# --- final review: R23-R25, footers, station map ----------------------------------
+
+
+def _relative(table):
+    return figures.make_scorecard_fig(table, "temperature_2m", "rmse", True, CTX)
+
+
+def test_relative_colour_range_is_capped_at_50_percent():
+    """R25: one huge percent change neither widens the scale nor loses its value."""
+    calm = _table()
+    wild = calm.copy()
+    hit = (wild["store"] == "gefs") & (wild["lead_day"] == 2)
+    wild.loc[hit, "rmse"] = 20.0  # ~ -1500 % against the baseline
+    h_calm, h_wild = _heat(_relative(calm)), _heat(_relative(wild))
+    assert h_wild.zmax == h_calm.zmax == 50 and h_wild.zmin == -50
+    row = list(h_wild.y).index(GRID_STORES["gefs"]["label"])
+    assert h_wild.customdata[row][1][1].startswith("-1")  # true value in hover
+    assert float(h_wild.customdata[row][1][1].split()[0]) < -1000
+    ticks = list(h_wild.colorbar.ticktext)
+    assert ticks[0] == "≤−50 %" and ticks[-1] == "≥50 %"
+    assert "capped at ±50 %" in figures.figure_text(_relative(wild))
+
+
+def test_lead_day_ticks_show_the_fewest_runs_of_the_column():
+    table = _table()
+    table.loc[(table["store"] == "gefs") & (table["lead_day"] == 5), "n_inits"] = 3
+    h_fig = figures.make_scorecard_fig(table, "temperature_2m", "rmse", False, CTX)
+    ticks = dict(zip(h_fig.layout.xaxis.tickvals, h_fig.layout.xaxis.ticktext))
+    assert ticks[5] == "Day 5<br>3 runs" and ticks[4] == "Day 4<br>30 runs"
+
+
+def test_footer_states_valid_hours_run_count_and_both_sources():
+    text = figures.figure_text(
+        figures.make_scorecard_fig(_table(), "temperature_2m", "rmse", False, CTX)
+    )
+    for phrase in ("scored at 00/06/12/18 UTC valid times",
+                   "long leads rest on fewer runs: the window ends at the last observation",
+                   "GHCNh", "forecasts: dynamical.org archive"):
+        assert phrase in text, phrase
+    z = figures.figure_text(
+        figures.make_scorecard_fig(_table("z500"), "z500", "rmse", False, CTX)
+    )
+    assert "forecasts: dynamical.org archive" in z and "00/06/12/18" not in z
+
+
+def test_bias_correction_and_spread_skill_are_defined_where_shown():
+    bc_def = "bias-corrected: minus each station×model mean error over the window"
+    ss_def = "√((M+1)/M · mean variance) / RMSE of the ensemble mean, ideal 1"
+
+    def text(score, fn=figures.make_scorecard_fig):
+        table = _table(score=score)
+        if fn is figures.make_scorecard_fig:
+            fig = fn(table, "temperature_2m", score, False, CTX)
+        else:
+            fig = fn(table, "temperature_2m", score, CTX)
+        return figures.figure_text(fig).lower()
+
+    ss_def = ss_def.lower()
+
+    assert bc_def in text("rmse_bc") and bc_def in text("mae_bc", figures.make_score_lead_fig)
+    assert ss_def in text("spread_skill", figures.make_score_lead_fig)
+    assert bc_def not in text("rmse") and ss_def not in text("rmse")
+
+
+def test_station_map_of_a_score_the_model_cannot_have_is_a_note():
+    df = pd.DataFrame({
+        "variable": "temperature_2m", "store": "gfs", "station": ["A", "B"],
+        "lat": [48.1, 50.9], "lon": [11.5, 6.9], "name": ["Munich", "Cologne"],
+        "spread_skill": [np.nan, np.nan], "n": [100, 90],
+    })
+    fig = figures.make_station_score_map(df, "temperature_2m", "spread_skill", CTX)
+    assert not [t for t in fig.data if t.name == "stations"]
+    note = " ".join(a.text for a in fig.layout.annotations)
+    assert GRID_STORES["gfs"]["label"] in note and "ensemble" in note
+
+
+def test_cell_on_few_runs_says_so_in_hover():
+    table = _table(low=())
+    hit = (table["store"] == "gefs") & (table["lead_day"] == 9)
+    table.loc[hit, ["n_inits", "low_n"]] = [3, True]
+    h = _heat(figures.make_scorecard_fig(table, "temperature_2m", "rmse", False, CTX))
+    row = list(h.y).index(GRID_STORES["gefs"]["label"])
+    assert h.customdata[row][8][4] == " (<5 runs)"

@@ -418,3 +418,16 @@ def test_changed_list_reads_observations_for_the_configured_stations(env, monkey
     )
     scorecard.refresh(("gfs",), VARS, TODAY, max_minutes=0)
     assert asked == [["A", "B"]]  # no wasted read of the old ids
+
+
+def test_aggregates_rewritten_when_pruning_removed_files_and_nothing_was_written(env):
+    """The window advances, its oldest init is pruned, no new init is scored:
+    the published aggregates must drop the pruned init all the same."""
+    scorecard.refresh(("gfs",), VARS, TODAY)  # window 09-22..10-05
+    assert scorecard.load_aggregates()[1]["start"] == "2026-09-22"
+    env.obs_end = pd.Timestamp("2026-10-07 00:00")  # window 09-23..10-06
+    assert scorecard.refresh(("gfs",), VARS, TODAY, max_minutes=0) == 0
+    assert not scores_db.scorecard_path(
+        "gfs", "temperature_2m", pd.Timestamp("2026-09-22")
+    ).exists()
+    assert scorecard.load_aggregates()[1]["start"] == "2026-09-23"

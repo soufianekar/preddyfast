@@ -1164,7 +1164,7 @@ def _ensemble_series(
 
     meta = {
         "init_time": init,
-        "n_members": int(len(members)),
+        "n_members": len(members),
         "n_lat": int(da.sizes["latitude"]),
         "n_lon": int(da.sizes["longitude"]),
         "bbox": (lat_min, lat_max, lon_min, lon_max),
@@ -1343,7 +1343,11 @@ _STATION_CUBE_VERSION = 2
 
 
 def _check_station_run_complete(
-    values: np.ndarray, lead_hours: np.ndarray, step_type: str, store: str, variable: str,
+    values: np.ndarray,
+    lead_hours: np.ndarray,
+    step_type: str,
+    store: str,
+    variable: str,
     init: pd.Timestamp,
 ) -> None:
     """Refuse a run with any non-finite value where the store should have one.
@@ -1356,7 +1360,9 @@ def _check_station_run_complete(
     rescoring trust the gap for good, and an interior NaN would widen a
     window's step after `dropna`.
     """
-    check = lead_hours > 0 if step_type != "instant" else np.ones(lead_hours.shape, bool)
+    check = (
+        lead_hours > 0 if step_type != "instant" else np.ones(lead_hours.shape, bool)
+    )
     bad = ~np.isfinite(values[:, :, check])
     if not bad.any():
         return
@@ -1364,7 +1370,12 @@ def _check_station_run_complete(
     n_stations = int(bad.any(axis=(1, 2)).sum())
     _log.warning(
         "station_cube refused %s %s %s: %d non-finite leads at %d of %d stations",
-        store, variable, f"{init:%Y-%m-%dT%H}", n_leads, n_stations, values.shape[0],
+        store,
+        variable,
+        f"{init:%Y-%m-%dT%H}",
+        n_leads,
+        n_stations,
+        values.shape[0],
     )
     raise GridDataError(
         f"{GRID_STORES[store]['label']} {variable} {init:%Y-%m-%d %H:%M} UTC is "
@@ -1389,7 +1400,9 @@ def _station_cache_path(
         {
             "stations": [
                 [str(i), round(float(la), 4), round(float(lo), 4)]
-                for i, la, lo in zip(stations["id"], stations["lat"], stations["lon"], strict=True)
+                for i, la, lo in zip(
+                    stations["id"], stations["lat"], stations["lon"], strict=True
+                )
             ],
             "accum_hours": accum_hours,
             # Bump when windowing, scaling or the file layout changes, so an
@@ -1402,7 +1415,9 @@ def _station_cache_path(
     return Path(POINT_CACHE_DIR) / "stations" / store / variable / name
 
 
-def _station_cells(ds, store: str, stations: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _station_cells(
+    ds, store: str, stations: pd.DataFrame
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Each station's cell in the store's own grid, and which stations have one.
 
     Snapped as the point reads snap (`round(x / res) * res`, by the store's own
@@ -1419,7 +1434,9 @@ def _station_cells(ds, store: str, stations: pd.DataFrame) -> tuple[np.ndarray, 
     lat = np.asarray(ds["latitude"].values, dtype=float)
     lon = np.asarray(ds["longitude"].values, dtype=float)
     lat_c = np.round(stations["lat"].to_numpy(dtype=float) / res) * res
-    lon_c = ((np.round(stations["lon"].to_numpy(dtype=float) / res) * res + 180.0) % 360.0) - 180.0
+    lon_c = (
+        (np.round(stations["lon"].to_numpy(dtype=float) / res) * res + 180.0) % 360.0
+    ) - 180.0
     rows = np.abs(lat[None, :] - lat_c[:, None]).argmin(axis=1)
     cols = np.abs(lon[None, :] - lon_c[:, None]).argmin(axis=1)
     kept = (np.abs(lat[rows] - lat_c) < res / 2) & (np.abs(lon[cols] - lon_c) < res / 2)
@@ -1431,7 +1448,9 @@ def _components(variable: str) -> tuple[str, ...]:
     return tuple(GRID_VARIABLES[variable].get("derived_from", (variable,)))
 
 
-def _component_step_type(ds, variable: str, components: tuple[str, ...], store: str) -> str:
+def _component_step_type(
+    ds, variable: str, components: tuple[str, ...], store: str
+) -> str:
     """The store's step type for a variable, checked on every component read."""
     if components == (variable,):
         return _require_variable(ds, variable, store)
@@ -1523,7 +1542,12 @@ def _station_read_boxes(
 
 
 def _read_station_cells(
-    ds, component: str, init: pd.Timestamp, bounds: tuple, rows: np.ndarray, cols: np.ndarray
+    ds,
+    component: str,
+    init: pd.Timestamp,
+    bounds: tuple,
+    rows: np.ndarray,
+    cols: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """One box read of a store variable, cut to the stations' cells.
 
@@ -1548,7 +1572,11 @@ def _read_station_cells(
     c = np.searchsorted(lon_box, lon_all[cols])
     values = np.moveaxis(box[:, :, r, c], -1, 0)
     lead = pd.to_timedelta(da["lead_time"].values).total_seconds() / 3600.0
-    return values, np.asarray(da["ensemble_member"].values), np.asarray(lead, dtype=float)
+    return (
+        values,
+        np.asarray(da["ensemble_member"].values),
+        np.asarray(lead, dtype=float),
+    )
 
 
 def _station_windows(
@@ -1588,7 +1616,9 @@ def _load_station_cube(path: Path) -> xr.DataArray:
     cube = xr.load_dataarray(path)
     # netCDF has no None: absent attrs were None when written.
     attrs = cube.attrs
-    attrs["window_hours"] = int(attrs["window_hours"]) if "window_hours" in attrs else None
+    attrs["window_hours"] = (
+        int(attrs["window_hours"]) if "window_hours" in attrs else None
+    )
     attrs["dropped_outside_domain"] = int(attrs["dropped_outside_domain"])
     attrs["res_deg"] = float(attrs["res_deg"])
     return cube
@@ -1682,7 +1712,8 @@ def station_cube(
     meta_var = GRID_VARIABLES[variable]
     if accum_hours and not meta_var.get("is_accumulated"):
         raise GridDataError(
-            f"'{variable}' is not an accumulated variable — it cannot be totalled over a window."
+            f"'{variable}' is not an accumulated variable — it cannot be totalled "
+            "over a window."
         )
     init = pd.Timestamp(init)
 
@@ -1705,14 +1736,20 @@ def station_cube(
     kept, rows, cols = _station_cells(ds, store, stations)
     dropped = int((~kept).sum())
     if not kept.any():
-        raise GridDataError(f"No station lies inside the {GRID_STORES[store]['label']} domain.")
+        raise GridDataError(
+            f"No station lies inside the {GRID_STORES[store]['label']} domain."
+        )
     lat_all = np.asarray(ds["latitude"].values, dtype=float)
     lon_all = np.asarray(ds["longitude"].values, dtype=float)
     cell_lat, cell_lon = lat_all[rows], lon_all[cols]
-    plans = {comp: _station_read_boxes(ds, store, comp, rows, cols) for comp in components}
+    plans = {
+        comp: _station_read_boxes(ds, store, comp, rows, cols) for comp in components
+    }
     # One budget check per call, for exactly the boxes read: every component's.
     check_station_read_budget(
-        store, [bounds for plan in plans.values() for bounds, _ in plan], budget_mb=budget_mb
+        store,
+        [bounds for plan in plans.values() for bounds, _ in plan],
+        budget_mb=budget_mb,
     )
 
     parts = []
@@ -1734,10 +1771,13 @@ def station_cube(
     values = values * meta_var["scale"] + meta_var["offset"]
     unit = meta_var["unit"]
     if accum_hours:
-        values, lead_hours = _station_windows(values, lead_hours, accum_hours, step_type)
+        values, lead_hours = _station_windows(
+            values, lead_hours, accum_hours, step_type
+        )
         if lead_hours.size == 0:
             raise GridDataError(
-                f"No lead time in this run carries a complete {accum_hours} h accumulation."
+                "No lead time in this run carries a complete "
+                f"{accum_hours} h accumulation."
             )
         unit = meta_var.get("accum_unit", unit)
 
@@ -1810,7 +1850,9 @@ def archive_meteogram(
     family = family_of("daily", daily_variable)
     members = VARIABLE_FAMILIES.get(family or "", {}).get("grid")
     if not members:
-        archived = ", ".join(v["label"] for v in GRID_VARIABLES.values())
+        archived = ", ".join(
+            v["label"] for v in GRID_VARIABLES.values() if "derived_from" not in v
+        )
         raise GridDataError(
             f"Past runs come from the {GRID_STORES[store]['label']} archive, which "
             f"holds: {archived}. This variable is not among them — choose the "

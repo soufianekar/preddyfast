@@ -148,7 +148,7 @@ def save_scorecard_init(
         "obs_end": None if obs_end is None else pd.Timestamp(obs_end).isoformat(),
         "network_hash": network_hash,
         "complete": bool(complete),
-        "n_pairs": int(len(out)),
+        "n_pairs": len(out),
         "dropped_nan_fc": int(rows.attrs.get("dropped_nan_fc", 0)),
     }
     table = pa.Table.from_pandas(out, preserve_index=False)

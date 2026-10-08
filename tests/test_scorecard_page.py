@@ -257,3 +257,35 @@ def test_description_names_the_configured_network_not_germany(page):
     text = str(page.layout().children if hasattr(page.layout(), "children") else page.layout())
     assert "Germany" not in text
     assert f"{len(SCORECARD_STATIONS)} major European city airports" in text
+
+
+def test_station_map_offers_only_lead_days_with_rows(page, monkeypatch):
+    """Day 10 is dropped when no selected model has station rows there."""
+    rows = _synthetic_rows()
+    rows = rows[rows["lead_hours"] < 240.0].reset_index(drop=True)
+    monkeypatch.setattr(
+        scores_db, "load_rows",
+        lambda stores, variables, start, end: rows[
+            rows["store"].isin(stores) & rows["variable"].isin(variables)
+        ].reset_index(drop=True),
+    )
+    scorecard.write_aggregates(TODAY)
+    data, value = page.options_for_lead("temperature_2m", "7", ["gefs"], "10")
+    assert [o["value"] for o in data] == ["1", "3", "5"] and value == "3"
+    assert page.options_for_lead("temperature_2m", "7", ["gefs"], "5")[1] == "5"
+
+
+def test_station_map_of_spread_skill_on_a_deterministic_model_is_a_note(page, monkeypatch):
+    rows = _synthetic_rows(stores=("ifs_ens", "gfs"))
+    monkeypatch.setattr(
+        scores_db, "load_rows",
+        lambda stores, variables, start, end: rows[
+            rows["store"].isin(stores) & rows["variable"].isin(variables)
+        ].reset_index(drop=True),
+    )
+    scorecard.write_aggregates(TODAY)
+    station_map = _call(page, score="spread_skill", models=["ifs_ens", "gfs"],
+                        map_model="gfs")[2]
+    assert not [t for t in station_map.data if t.name == "stations"]
+    note = " ".join(a.text for a in station_map.layout.annotations)
+    assert "GFS" in note and "deterministic" in note

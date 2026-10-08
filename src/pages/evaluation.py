@@ -39,12 +39,16 @@ from utils.settings import (
 )
 from utils.url_state import query_choice, query_list
 
-dash.register_page(__name__, path="/evaluation", title="Forecast scorecard · preddyfast")
+dash.register_page(
+    __name__, path="/evaluation", title="Forecast scorecard · preddyfast"
+)
 
 _BASELINE = "ifs_ens"
 _DEFAULT_VARIABLE = "temperature_2m"
 _DEFAULT_PERIOD = SCORECARD_DAYS
+_PERIODS = {str(p) for p in SCORECARD_PERIODS}
 _DEFAULT_LEAD = "3"
+_LEADS = tuple(str(d) for d in scorecard.STATION_LEAD_DAYS)
 _MISSING = "No scorecard has been published yet."
 _SCORE_NAMES = {
     "rmse": "RMSE",
@@ -70,9 +74,9 @@ def _score_label(variable: str, score: str) -> str:
         name = _SCORE_NAMES[score]
     ideal = SCORE_DIRECTION[score]
     hint = (
-        "lower is better" if ideal == "lower"
-        else "higher is better" if ideal == "higher"
-        else f"ideal {ideal:g}"
+        "lower is better"
+        if ideal == "lower"
+        else "higher is better" if ideal == "higher" else f"ideal {ideal:g}"
     )
     return f"{name} ({hint})"
 
@@ -103,7 +107,9 @@ def _store_options(meta: dict | None, only: list[str] | None = None) -> list[dic
     if only is not None:
         held &= set(only)
     return [
-        {"value": s, "label": GRID_STORES[s]["label"]} for s in SCORECARD_STORES if s in held
+        {"value": s, "label": GRID_STORES[s]["label"]}
+        for s in SCORECARD_STORES
+        if s in held
     ]
 
 
@@ -129,6 +135,24 @@ def _select(
         & agg["store"].isin(stores)
     )
     return agg.loc[keep]
+
+
+def _lead_options(
+    agg: pd.DataFrame | None, variable: str | None, period: str | None, stores: list
+) -> list[str]:
+    """Station-map lead days some selected model has rows for in the period.
+
+    All of `_LEADS` when nothing is held (the map then says there is no data).
+    """
+    if agg is None or agg.empty or variable is None or period not in _PERIODS:
+        return list(_LEADS)
+    rows = _select(agg, "station", variable, int(period), stores)
+    held = {str(int(d)) for d in rows["lead_day"].dropna()}
+    return [d for d in _LEADS if d in held] or list(_LEADS)
+
+
+def _lead_data(leads: list[str]) -> list[dict]:
+    return [{"value": d, "label": f"Day {d}"} for d in leads]
 
 
 def _load() -> tuple[tuple[pd.DataFrame, dict] | None, str | None]:
@@ -161,18 +185,37 @@ def layout(**query_params):
         query_params, "variable", [o["value"] for o in variables], _DEFAULT_VARIABLE
     )
     score = query_choice(
-        query_params, "score", [o["value"] for o in _score_options(variable)],
+        query_params,
+        "score",
+        [o["value"] for o in _score_options(variable)],
         _score_options(variable)[0]["value"],
     )
     period = query_choice(
-        query_params, "period", [str(p) for p in SCORECARD_PERIODS], str(_DEFAULT_PERIOD)
+        query_params,
+        "period",
+        [str(p) for p in SCORECARD_PERIODS],
+        str(_DEFAULT_PERIOD),
     )
-    display = query_choice(query_params, "display", ("absolute", "relative"), "relative")
+    display = query_choice(
+        query_params, "display", ("absolute", "relative"), "relative"
+    )
     stores = _store_options(meta)
-    models = query_list(query_params, "models", [o["value"] for o in stores],
-                        [o["value"] for o in stores])
-    lead = query_choice(query_params, "lead", ("1", "3", "5", "10"), _DEFAULT_LEAD)
-    map_model = query_choice(query_params, "mapmodel", models, models[0] if models else None)
+    models = query_list(
+        query_params,
+        "models",
+        [o["value"] for o in stores],
+        [o["value"] for o in stores],
+    )
+    leads = _lead_options(agg, variable, period, models)
+    lead = query_choice(
+        query_params,
+        "lead",
+        leads,
+        _DEFAULT_LEAD if _DEFAULT_LEAD in leads else leads[0],
+    )
+    map_model = query_choice(
+        query_params, "mapmodel", models, models[0] if models else None
+    )
     base_label = GRID_STORES[_BASELINE]["label"]
 
     return page_shell(
@@ -192,11 +235,17 @@ def layout(**query_params):
             html.Div(id="sc-current-url", style={"display": "none"}),
             "What",
             dmc.Select(
-                id="sc-variable", label="Variable", data=variables, value=variable,
+                id="sc-variable",
+                label="Variable",
+                data=variables,
+                value=variable,
                 allowDeselect=False,
             ),
             dmc.Select(
-                id="sc-score", label="Score", data=_score_options(variable), value=score,
+                id="sc-score",
+                label="Score",
+                data=_score_options(variable),
+                value=score,
                 allowDeselect=False,
             ),
             "When",
@@ -205,8 +254,13 @@ def layout(**query_params):
                     dmc.Text("Period (days to the newest run)", size="sm", fw=500),
                     dmc.SegmentedControl(
                         id="sc-period",
-                        data=[{"value": str(p), "label": f"{p} d"} for p in SCORECARD_PERIODS],
-                        value=period, fullWidth=True, size="xs",
+                        data=[
+                            {"value": str(p), "label": f"{p} d"}
+                            for p in SCORECARD_PERIODS
+                        ],
+                        value=period,
+                        fullWidth=True,
+                        size="xs",
                     ),
                 ],
                 gap=4,
@@ -218,16 +272,24 @@ def layout(**query_params):
                     {"value": "absolute", "label": "Absolute"},
                     {"value": "relative", "label": f"vs {base_label}"},
                 ],
-                value=display, fullWidth=True, size="xs",
+                value=display,
+                fullWidth=True,
+                size="xs",
             ),
             "Models",
             dmc.MultiSelect(
-                id="sc-models", label="Models", data=stores, value=models,
+                id="sc-models",
+                label="Models",
+                data=stores,
+                value=models,
                 description=f"vs {base_label} always includes {base_label}.",
             ),
             dmc.Select(
-                id="sc-map-model", label="Map model", data=_store_options(meta, models),
-                value=map_model, allowDeselect=False,
+                id="sc-map-model",
+                label="Map model",
+                data=_store_options(meta, models),
+                value=map_model,
+                allowDeselect=False,
                 description="Station map: one model at a time.",
             ),
             dmc.Stack(
@@ -235,8 +297,10 @@ def layout(**query_params):
                     dmc.Text("Lead day for the station map", size="sm", fw=500),
                     dmc.SegmentedControl(
                         id="sc-lead",
-                        data=[{"value": d, "label": f"Day {d}"} for d in ("1", "3", "5", "10")],
-                        value=lead, fullWidth=True, size="xs",
+                        data=_lead_data(leads),
+                        value=lead,
+                        fullWidth=True,
+                        size="xs",
                     ),
                 ],
                 gap=4,
@@ -250,9 +314,11 @@ def layout(**query_params):
         ],
         main=[
             html.Div(
-                dmc.Alert(load_error or _MISSING, color="red", mb="xs")
-                if load_error or loaded is None
-                else [],
+                (
+                    dmc.Alert(load_error or _MISSING, color="red", mb="xs")
+                    if load_error or loaded is None
+                    else []
+                ),
                 id="sc-alert-container",
             ),
             dmc.Text(id="sc-provenance", size="sm", c="dimmed", mb="xs"),
@@ -300,12 +366,33 @@ def options_for_variable(variable, score):
     State("sc-map-model", "value"),
 )
 def options_for_map_model(models, current):
-    """Map model is one of the selected models; keep the current one if still selected."""
+    """Map model is one of the selected models; keep the current one if still
+    selected."""
     chosen = [s for s in SCORECARD_STORES if s in (models or [])]
     options = _store_options(None, chosen)
     if not chosen:
         return options, None
     return options, current if current in chosen else chosen[0]
+
+
+@callback(
+    Output("sc-lead", "data"),
+    Output("sc-lead", "value"),
+    Input("sc-variable", "value"),
+    Input("sc-period", "value"),
+    Input("sc-models", "value"),
+    State("sc-lead", "value"),
+)
+def options_for_lead(variable, period, models, current):
+    """Offer only lead days the selected models have station rows for."""
+    loaded, load_error = _load()
+    if load_error or loaded is None:
+        return no_update, no_update
+    stores = [s for s in SCORECARD_STORES if s in (models or [])]
+    leads = _lead_options(loaded[0], variable, period, stores)
+    if current in leads:
+        return _lead_data(leads), current
+    return _lead_data(leads), _DEFAULT_LEAD if _DEFAULT_LEAD in leads else leads[0]
 
 
 @callback(
@@ -324,9 +411,12 @@ def options_for_map_model(models, current):
 )
 def update_scorecard(variable, score, period, display, models, lead, map_model):
     """Filter the precomputed aggregates and draw the three views."""
-    if variable not in SCORECARD_VARIABLES or score not in SCORECARD_VARIABLES[variable]["scores"]:
+    if (
+        variable not in SCORECARD_VARIABLES
+        or score not in SCORECARD_VARIABLES[variable]["scores"]
+    ):
         return (no_update,) * 5
-    if period not in {str(p) for p in SCORECARD_PERIODS} or lead not in {"1", "3", "5", "10"}:
+    if period not in _PERIODS or lead not in _LEADS:
         return (no_update,) * 5
     loaded, load_error = _load()
     if load_error:
@@ -350,7 +440,9 @@ def update_scorecard(variable, score, period, display, models, lead, map_model):
     relative = display == "relative"
     try:
         lead_rows = _select(agg, "lead", variable, days, stores)
-        card_stores = [*stores, _BASELINE] if relative and _BASELINE not in stores else stores
+        card_stores = (
+            [*stores, _BASELINE] if relative and _BASELINE not in stores else stores
+        )
         card_rows = _select(agg, "lead", variable, days, card_stores)
         context = {
             "n_stations": int(lead_rows["n_stations"].max()) if len(lead_rows) else 0,
@@ -373,7 +465,9 @@ def update_scorecard(variable, score, period, display, models, lead, map_model):
         station_map = make_station_score_map(stations, variable, score, station_ctx)
     except (KeyError, ValueError) as err:
         empty = make_empty_fig("No data available")
-        alert = dmc.Alert(f"The scorecard could not be drawn: {err}", color="red", mb="xs")
+        alert = dmc.Alert(
+            f"The scorecard could not be drawn: {err}", color="red", mb="xs"
+        )
         return empty, empty, empty, alert, provenance
     return heat, lines, station_map, note, provenance
 

@@ -23,6 +23,8 @@ from utils.settings import (
     NATURAL_EARTH_FILE,
     OBSERVED_COLOR,
     SCORE_DIRECTION,
+    SCORECARD_LEAD_STEP_HOURS,
+    SCORECARD_MIN_INITS,
     SCORECARD_STORES,
     SCORECARD_VARIABLES,
     SYSTEM_STYLES,
@@ -2046,6 +2048,19 @@ _SCORECARD_SCORES: dict[str, tuple[str, bool]] = {
 _NEUTRAL_MARK = "rgba(128, 128, 128, 0.95)"
 _SCORECARD_DETERMINISTIC_SKIP = ("spread_skill", "brier")
 _SCORECARD_HEIGHT = 420
+# R25: the relative colour range is fixed; the true percent stays in the hover.
+_RELATIVE_CAP_PCT = 50.0
+_FORECAST_SOURCE = "forecasts: dynamical.org archive"
+_BIAS_CORRECTED_NOTE = (
+    "bias-corrected: minus each station×model mean error over the window, "
+    "all leads, in-sample"
+)
+_SPREAD_SKILL_NOTE = (
+    "spread/skill = √((M+1)/M · mean variance) / RMSE of the ensemble mean, ideal 1"
+)
+_FEW_RUNS_NOTE = (
+    "long leads rest on fewer runs: the window ends at the last observation"
+)
 
 
 def _score_text(score: str, variable: str) -> tuple[str, str]:
@@ -2083,21 +2098,38 @@ def _scorecard_frame_text(
     )
     if spec["reference"] == "control_t0":
         match = (
-            "Verified against a pseudo-analysis: IFS control T+0, favours IFS and AIFS · "
-            "00 UTC valid times, at each station's grid cell"
+            "Verified against a pseudo-analysis: IFS control T+0, favours IFS and "
+            "AIFS · 00 UTC valid times, at each station's grid cell"
         )
-    elif spec["window_hours"]:
-        match = context.get("tolerance") or (
-            f"Observations: {spec['window_hours']} h totals ending 00/06/12/18 UTC — "
-            "reported where available, else complete hourly sums"
-        )
+        sampling = _FEW_RUNS_NOTE[0].upper() + _FEW_RUNS_NOTE[1:]
     else:
-        tol = spec["tolerance"].replace("min", " min")
-        match = context.get("tolerance") or f"Observations: GHCNh, matched within ±{tol}"
+        if spec["window_hours"]:
+            match = context.get("tolerance") or (
+                f"Observations: GHCNh {spec['window_hours']} h totals ending "
+                "00/06/12/18 UTC — reported where available, else complete "
+                "hourly sums"
+            )
+        else:
+            tol = spec["tolerance"].replace("min", " min")
+            match = context.get("tolerance") or (
+                f"Observations: GHCNh, matched within ±{tol}"
+            )
+        hours = "/".join(
+            f"{h:02d}"
+            for h in range(
+                context["init_hour"] % SCORECARD_LEAD_STEP_HOURS,
+                24,
+                SCORECARD_LEAD_STEP_HOURS,
+            )
+        )
+        sampling = f"Every model scored at {hours} UTC valid times · {_FEW_RUNS_NOTE}"
     lines = [
-        match,
-        "Model values: nearest grid cell, no height correction; coastal cells may be partly sea · "
-        "common inits: every model scored on the same runs",
+        f"{match} · {_FORECAST_SOURCE}",
+        (
+            "Model values: nearest grid cell, no height correction; coastal cells "
+            "may be partly sea · common inits: every model scored on the same runs"
+        ),
+        sampling,
     ]
     notes = []
     if score == "crps":
@@ -2106,9 +2138,16 @@ def _scorecard_frame_text(
             notes.append("CRPS of a deterministic model equals its MAE")
     elif score == "brier":
         notes.append(f"fair Brier score at ≥ {spec['threshold']:g} {spec['unit']}")
+    elif score in ("rmse_bc", "mae_bc"):
+        notes.append(_BIAS_CORRECTED_NOTE)
+    elif score == "spread_skill":
+        notes.append(_SPREAD_SKILL_NOTE)
     if relative:
         base = GRID_STORES[context["baseline"]]["label"]
-        notes.append(f"colour: % change vs {base}, positive = better")
+        notes.append(
+            f"colour: % change vs {base}, positive = better, capped at "
+            f"±{_RELATIVE_CAP_PCT:g} %"
+        )
     if notes:
         lines.append(" · ".join(notes)[0].upper() + " · ".join(notes)[1:])
     if context.get("absent_note"):
@@ -2117,14 +2156,18 @@ def _scorecard_frame_text(
 
 
 def _score_scale(score: str, values: np.ndarray) -> dict:
-    """Colour-scale kwargs for absolute values: the better end is always the same colour."""
+    """Colour-scale kwargs for absolute values: the better end keeps one colour."""
     direction = SCORE_DIRECTION[score]
     finite = values[np.isfinite(values)]
     if not isinstance(direction, str):
         half = float(np.abs(finite - direction).max()) if finite.size else 1.0
         half = half or 1.0
-        return {"colorscale": "RdBu_r", "zmid": direction,
-                "zmin": direction - half, "zmax": direction + half}
+        return {
+            "colorscale": "RdBu_r",
+            "zmid": direction,
+            "zmin": direction - half,
+            "zmax": direction + half,
+        }
     return {"colorscale": "YlGnBu_r" if direction == "lower" else "YlGnBu"}
 
 
@@ -2166,13 +2209,17 @@ def make_scorecard_fig(
     min_n = context.get("min_n", 50)
 
     def grid(frame: pd.DataFrame, column: str) -> np.ndarray:
-        wide = frame.pivot_table(index="store", columns="lead_day", values=column, aggfunc="first")
+        wide = frame.pivot_table(
+            index="store", columns="lead_day", values=column, aggfunc="first"
+        )
         return wide.reindex(index=stores, columns=days).to_numpy(dtype=float)
 
     stored = context.get("relative_rows")
     if stored is not None:
         stored = stored[stored["variable"] == variable]
-    pct_table = stored if stored is not None else relative_to(table, context["baseline"])
+    pct_table = (
+        stored if stored is not None else relative_to(table, context["baseline"])
+    )
     absolute, pct = grid(table, score), grid(pct_table, score)
     z = pct if relative else absolute
     n = grid(table, "n")
@@ -2180,9 +2227,18 @@ def make_scorecard_fig(
     low = grid(table.assign(low_n=table["low_n"].astype(float)), "low_n") == 1.0
 
     def fmt(a: np.ndarray, spec: str, suffix: str = "") -> np.ndarray:
-        return np.where(np.isfinite(a), np.vectorize(lambda v: f"{v:{spec}}{suffix}")(np.nan_to_num(a)), "–")
+        return np.where(
+            np.isfinite(a),
+            np.vectorize(lambda v: f"{v:{spec}}{suffix}")(np.nan_to_num(a)),
+            "–",
+        )
 
-    flag = np.where(low, f" (n<{min_n})", "")
+    few_runs = np.isfinite(n_inits) & (n_inits < SCORECARD_MIN_INITS)
+    flag = np.where(
+        low & (n < min_n),
+        f" (n<{min_n})",
+        np.where(low & few_runs, f" (<{SCORECARD_MIN_INITS} runs)", ""),
+    )
     custom = np.stack(
         [
             fmt(absolute, ".3g", f" {unit}" if unit else ""),
@@ -2196,30 +2252,59 @@ def make_scorecard_fig(
     labels = [GRID_STORES[s]["label"] for s in stores]
     base_label = GRID_STORES[context["baseline"]]["label"]
     if relative:
-        labels = [f"{lab} (baseline)" if s == context["baseline"] else lab for s, lab in zip(stores, labels)]
-        finite = z[np.isfinite(z)]
-        zmax = float(np.abs(finite).max()) if finite.size else 1.0
-        zmax = zmax or 1.0
-        scale = {"colorscale": "RdBu", "zmid": 0, "zmin": -zmax, "zmax": zmax}
-        bar = {"title": {"text": f"% better than {base_label}", "side": "right"}, "ticksuffix": " %"}
+        labels = [
+            f"{lab} (baseline)" if s == context["baseline"] else lab
+            for s, lab in zip(stores, labels)
+        ]
+        # R25: fixed ±cap (target-valued scores near their ideal explode the
+        # percent); the true value stays in the hover's customdata.
+        cap = _RELATIVE_CAP_PCT
+        z = np.clip(z, -cap, cap)
+        scale = {"colorscale": "RdBu", "zmid": 0, "zmin": -cap, "zmax": cap}
+        ticks = np.linspace(-cap, cap, 5)
+        bar = {
+            "title": {"text": f"% better than {base_label}", "side": "right"},
+            "tickvals": list(ticks),
+            "ticktext": [
+                f"≤−{cap:g} %",
+                *(f"{t:+g} %".replace("-", "−") for t in ticks[1:-1]),
+                f"≥{cap:g} %",
+            ],
+        }
     else:
         scale = _score_scale(score, z)
         direction = SCORE_DIRECTION[score]
         hint = (
-            "lower is better" if direction == "lower"
-            else "higher is better" if direction == "higher"
-            else f"closer to {direction:g} is better"
+            "lower is better"
+            if direction == "lower"
+            else (
+                "higher is better"
+                if direction == "higher"
+                else f"closer to {direction:g} is better"
+            )
         )
-        bar = {"title": {"text": f"{label}{f' ({unit})' if unit else ''} · {hint}", "side": "right"}}
+        bar = {
+            "title": {
+                "text": f"{label}{f' ({unit})' if unit else ''} · {hint}",
+                "side": "right",
+            }
+        }
     fig = go.Figure(
         go.Heatmap(
-            x=days, y=labels, z=np.where(np.isfinite(z), z, np.nan),
-            customdata=custom, hoverongaps=False, xgap=1, ygap=1,
+            x=days,
+            y=labels,
+            z=np.where(np.isfinite(z), z, np.nan),
+            customdata=custom,
+            hoverongaps=False,
+            xgap=1,
+            ygap=1,
             colorbar=bar,
             hovertemplate=(
                 "%{y}<br>Lead day %{x}<br>"
-                f"{label}: %{{customdata[0]}}<br>vs {base_label}: %{{customdata[1]}}<br>"
-                "n=%{customdata[2]} pairs, %{customdata[3]} inits%{customdata[4]}<extra></extra>"
+                f"{label}: %{{customdata[0]}}<br>"
+                f"vs {base_label}: %{{customdata[1]}}<br>"
+                "n=%{customdata[2]} pairs, %{customdata[3]} inits%{customdata[4]}"
+                "<extra></extra>"
             ),
             **scale,
         )
@@ -2228,26 +2313,63 @@ def make_scorecard_fig(
         rows, cols = np.nonzero(low & np.isfinite(z))
         fig.add_trace(
             go.Scatter(
-                x=[days[c] for c in cols], y=[labels[r] for r in rows], mode="markers",
-                marker={"symbol": "x", "size": 9, "color": _NEUTRAL_MARK, "line": {"width": 1}},
-                name="n below minimum", hoverinfo="skip",
+                x=[days[c] for c in cols],
+                y=[labels[r] for r in rows],
+                mode="markers",
+                marker={
+                    "symbol": "x",
+                    "size": 9,
+                    "color": _NEUTRAL_MARK,
+                    "line": {"width": 1},
+                },
+                name="n below minimum",
+                hoverinfo="skip",
             )
         )
+    # R24: each column names its fewest runs (minimum n_inits over the models).
+    with np.errstate(all="ignore"):
+        runs = np.where(
+            np.isfinite(n_inits).any(axis=0),
+            np.nanmin(np.where(np.isfinite(n_inits), n_inits, np.inf), axis=0),
+            np.nan,
+        )
+    ticktext = [
+        (
+            f"Day {d}<br>{r:.0f} run{'s' if r != 1 else ''}"
+            if np.isfinite(r)
+            else f"Day {d}"
+        )
+        for d, r in zip(days, runs)
+    ]
     fig.update_layout(
-        **{k: v for k, v in _LAYOUT_DEFAULTS.items() if k not in ("hovermode", "legend", "margin")},
+        **{
+            k: v
+            for k, v in _LAYOUT_DEFAULTS.items()
+            if k not in ("hovermode", "legend", "margin")
+        },
         hovermode="closest",
-        xaxis={"title": "Lead day (day 1 = 0–24 h)", "dtick": 1},
+        xaxis={
+            "title": "Lead day (day 1 = 0–24 h)",
+            "tickvals": days,
+            "ticktext": ticktext,
+        },
         yaxis={"autorange": "reversed"},
     )
     head, foot = _scorecard_frame_text(variable, score, stores, context, relative)
     _frame_timeseries(
-        fig, f"{SCORECARD_VARIABLES[variable]['label']} — {label}", head, foot,
-        height=_SCORECARD_HEIGHT + 30 * len(stores), x_kind="linear",
+        fig,
+        f"{SCORECARD_VARIABLES[variable]['label']} — {label}",
+        head,
+        foot,
+        height=_SCORECARD_HEIGHT + 30 * len(stores),
+        x_kind="date",  # two-line ticks: day and run count
     )
     return fig
 
 
-def make_score_lead_fig(df: pd.DataFrame, variable: str, score: str, context: dict) -> go.Figure:
+def make_score_lead_fig(
+    df: pd.DataFrame, variable: str, score: str, context: dict
+) -> go.Figure:
     """One score against lead day, one line per model (never pooled).
 
     Deterministic models are skipped for spread/skill and Brier (one member). A
@@ -2272,7 +2394,9 @@ def make_score_lead_fig(df: pd.DataFrame, variable: str, score: str, context: di
         name = GRID_STORES[store]["label"]
         fig.add_trace(
             go.Scatter(
-                x=sub["lead_day"], y=sub[score], mode="lines+markers",
+                x=sub["lead_day"],
+                y=sub[score],
+                mode="lines+markers",
                 line={"color": color, "width": 2},
                 marker={"color": color, "size": 4 + 6 * sub["n"] / n_max},
                 customdata=np.stack([sub["n"], sub["n_inits"]], axis=-1),
@@ -2285,22 +2409,34 @@ def make_score_lead_fig(df: pd.DataFrame, variable: str, score: str, context: di
         )
     ideal = SCORE_DIRECTION[score]
     if not isinstance(ideal, str):
-        fig.add_hline(y=ideal, line={"color": _NEUTRAL_MARK, "width": 1, "dash": "dash"})
+        fig.add_hline(
+            y=ideal, line={"color": _NEUTRAL_MARK, "width": 1, "dash": "dash"}
+        )
     fig.update_layout(
-        **{k: v for k, v in _LAYOUT_DEFAULTS.items() if k not in ("hovermode", "legend", "margin")},
+        **{
+            k: v
+            for k, v in _LAYOUT_DEFAULTS.items()
+            if k not in ("hovermode", "legend", "margin")
+        },
         hovermode="closest",
         xaxis={"title": "Lead day (day 1 = 0–24 h)", "dtick": 1},
         yaxis_title=f"{label}{f' ({unit})' if unit else ''}",
     )
     head, foot = _scorecard_frame_text(variable, score, stores, context)
     _frame_timeseries(
-        fig, f"{SCORECARD_VARIABLES[variable]['label']} — {label}", head, foot,
-        height=_SCORECARD_HEIGHT + 60, x_kind="linear",
+        fig,
+        f"{SCORECARD_VARIABLES[variable]['label']} — {label}",
+        head,
+        foot,
+        height=_SCORECARD_HEIGHT + 60,
+        x_kind="linear",
     )
     return fig
 
 
-def make_station_score_map(df: pd.DataFrame, variable: str, score: str, context: dict) -> go.Figure:
+def make_station_score_map(
+    df: pd.DataFrame, variable: str, score: str, context: dict
+) -> go.Figure:
     """One dot per station coloured by one score, on the bundled coastlines.
 
     Parameters
@@ -2315,47 +2451,90 @@ def make_station_score_map(df: pd.DataFrame, variable: str, score: str, context:
     if df.empty:
         return make_empty_fig("No data available")
     label, unit = _score_text(score, variable)
+    if not np.isfinite(df[score].to_numpy(dtype=float)).any():
+        stores = list(df["store"].unique()) if "store" in df else []
+        if (
+            score in _SCORECARD_DETERMINISTIC_SKIP
+            and stores
+            and all(_is_deterministic(s) for s in stores)
+        ):
+            models = ", ".join(GRID_STORES[s]["label"] for s in stores)
+            return make_empty_fig(
+                f"{label} needs an ensemble: {models} is deterministic"
+            )
+        return make_empty_fig("No data available")
     names = df["name"] if "name" in df else df["station"]
     custom = np.stack([df["station"], names, df["n"]], axis=-1)
     stores = list(df["store"].unique()) if "store" in df else []
     fig = go.Figure()
     extent = (
-        float(df["lat"].min()) - 0.5, float(df["lat"].max()) + 0.5,
-        float(df["lon"].min()) - 0.5, float(df["lon"].max()) + 0.5,
-    ) if len(df) else (47.0, 55.5, 5.5, 15.5)
+        (
+            float(df["lat"].min()) - 0.5,
+            float(df["lat"].max()) + 0.5,
+            float(df["lon"].min()) - 0.5,
+            float(df["lon"].max()) + 0.5,
+        )
+        if len(df)
+        else (47.0, 55.5, 5.5, 15.5)
+    )
     for trace in _basemap_traces(extent):
         fig.add_trace(trace)
     values = df[score].to_numpy(dtype=float)
     scale = _score_scale(score, values)
     fig.add_trace(
         go.Scatter(
-            x=df["lon"], y=df["lat"], mode="markers", name="stations",
+            x=df["lon"],
+            y=df["lat"],
+            mode="markers",
+            name="stations",
             marker={
-                "size": 9, "color": values, "line": {"width": 0.5, "color": _NEUTRAL_MARK},
-                "colorbar": {"title": {"text": f"{label}{f' ({unit})' if unit else ''}", "side": "right"}},
-                "cmin": scale.get("zmin"), "cmax": scale.get("zmax"), "cmid": scale.get("zmid"),
+                "size": 9,
+                "color": values,
+                "line": {"width": 0.5, "color": _NEUTRAL_MARK},
+                "colorbar": {
+                    "title": {
+                        "text": f"{label}{f' ({unit})' if unit else ''}",
+                        "side": "right",
+                    }
+                },
+                "cmin": scale.get("zmin"),
+                "cmax": scale.get("zmax"),
+                "cmid": scale.get("zmid"),
                 "colorscale": scale["colorscale"],
             },
             customdata=custom,
             hovertemplate=(
                 "%{customdata[1]} (%{customdata[0]})<br>"
-                f"{label}: %{{marker.color:.3g}} {unit}<br>n=%{{customdata[2]}} pairs<extra></extra>"
+                f"{label}: %{{marker.color:.3g}} {unit}<br>"
+                "n=%{customdata[2]} pairs<extra></extra>"
             ),
         )
     )
     lat_min, lat_max, lon_min, lon_max = extent
     aspect = 1.0 / max(np.cos(np.deg2rad((lat_min + lat_max) / 2.0)), 0.05)
     fig.update_layout(
-        **{k: v for k, v in _LAYOUT_DEFAULTS.items() if k not in ("hovermode", "legend", "margin")},
-        hovermode="closest", showlegend=False,
-        xaxis_title="Longitude (°E)", yaxis_title="Latitude (°N)",
+        **{
+            k: v
+            for k, v in _LAYOUT_DEFAULTS.items()
+            if k not in ("hovermode", "legend", "margin")
+        },
+        hovermode="closest",
+        showlegend=False,
+        xaxis_title="Longitude (°E)",
+        yaxis_title="Latitude (°N)",
     )
     fig.update_xaxes(range=[lon_min, lon_max], constrain="domain")
-    fig.update_yaxes(range=[lat_min, lat_max], scaleanchor="x", scaleratio=aspect, constrain="domain")
+    fig.update_yaxes(
+        range=[lat_min, lat_max], scaleanchor="x", scaleratio=aspect, constrain="domain"
+    )
     head, foot = _scorecard_frame_text(variable, score, stores, context)
     lead = f" · {context['lead']}" if context.get("lead") else ""
     _frame_timeseries(
-        fig, f"{SCORECARD_VARIABLES[variable]['label']} — {label} by station{lead}", head, foot,
-        height=620, x_kind="linear",
+        fig,
+        f"{SCORECARD_VARIABLES[variable]['label']} — {label} by station{lead}",
+        head,
+        foot,
+        height=620,
+        x_kind="linear",
     )
     return fig

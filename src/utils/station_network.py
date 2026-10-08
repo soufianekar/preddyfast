@@ -2,7 +2,8 @@
 
 The fixed `SCORECARD_STATIONS` (else GHCNh stations of `SCORECARD_COUNTRY`,
 thinned by farthest-point distance so dense clusters do not dominate) are
-screened for completeness over the scorecard window. All times are UTC; nothing is localized.
+screened for completeness over the scorecard window. All times are UTC; nothing
+is localized.
 """
 
 from __future__ import annotations
@@ -32,7 +33,14 @@ _SYNOPTIC_HOURS = (0, 6, 12, 18)
 _TOLERANCE = pd.Timedelta("15min")
 _SYNOP_TYPE = "FM-12"
 _SELECT_COLUMNS = [
-    "id", "name", "lat", "lon", "elev_m", "ok_temperature", "ok_precip", "ok_wind",
+    "id",
+    "name",
+    "lat",
+    "lon",
+    "elev_m",
+    "ok_temperature",
+    "ok_precip",
+    "ok_wind",
 ]
 # scorecard variable key -> ok_* column in the selected network
 _OK_COLUMN = {
@@ -254,8 +262,9 @@ def select_network(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
     With `SCORECARD_STATIONS` set, exactly those stations (no country filter,
     no thinning; precipitation is screened at
     `SCORECARD_FIXED_PRECIP_COMPLETENESS`; one failing temperature is logged
-    and excluded). Otherwise candidates are `SCORECARD_COUNTRY` stations with a file for the window's
-    start or end year, thinned by distance to 2 x `SCORECARD_MAX_STATIONS` before any
+    and excluded). Otherwise candidates are `SCORECARD_COUNTRY` stations with a
+    file for the window's start or end year, thinned by distance to
+    2 x `SCORECARD_MAX_STATIONS` before any
     download. Those are screened per variable by completeness; the stations
     passing temperature are thinned to `SCORECARD_MAX_STATIONS`.
 
@@ -278,11 +287,15 @@ def select_network(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
     fixed = bool(SCORECARD_STATIONS)
     if fixed:
         st = st[st["id"].isin(SCORECARD_STATIONS)]
-        st = st.set_index("id").loc[
-            [i for i in SCORECARD_STATIONS if i in set(st["id"])]
-        ].reset_index()
+        st = (
+            st.set_index("id")
+            .loc[[i for i in SCORECARD_STATIONS if i in set(st["id"])]]
+            .reset_index()
+        )
         for sid in set(SCORECARD_STATIONS) - set(st["id"]):
-            logger.warning("Configured station %s is not in the GHCNh station list", sid)
+            logger.warning(
+                "Configured station %s is not in the GHCNh station list", sid
+            )
     else:
         st = st[st["country"] == SCORECARD_COUNTRY]
         years = sorted({end.year, start.year})
@@ -305,7 +318,8 @@ def select_network(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
     if fixed:
         for sid in net.loc[~net["ok_temperature"], "id"]:
             logger.warning(
-                "Fixed station %s fails the temperature completeness screen: excluded", sid
+                "Fixed station %s fails the temperature completeness screen: excluded",
+                sid,
             )
     net = net[net["ok_temperature"]].reset_index(drop=True)
     if fixed:
@@ -343,7 +357,9 @@ def save_network(
     path = _network_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_atomic(path, lambda p: network.to_parquet(p, index=False))
-    window = {"start": _utc(start).isoformat(), "end": _utc(end).isoformat(),
+    window = {
+        "start": _utc(start).isoformat(),
+        "end": _utc(end).isoformat(),
         "configured": sorted(configured),
     }
     _write_atomic(_window_path(), lambda p: p.write_text(json.dumps(window)))

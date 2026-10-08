@@ -3,8 +3,8 @@
 Pure: no Dash, no reads. `match_station_obs` pairs every (station, lead) of a
 `earthmover_api.station_cube` with its observation on valid time (UTC, never
 local time), or `match_reference` with the IFS control T+0 of the init at
-each 00 UTC valid time (Z500); `pair_scores` turns the pairs into one row of additive score
-parts each, which Task 6 aggregates over periods and lead-day bins.
+each 00 UTC valid time (Z500); `pair_scores` turns the pairs into one row of
+additive score parts each, which `aggregate` reduces over periods and lead-day bins.
 """
 
 from __future__ import annotations
@@ -41,10 +41,12 @@ from utils.settings import (
     EVAL_REFERENCES,
     GRID_STORES,
     PRECOMPUTE_DIR,
-    SCORE_DIRECTION,  # noqa: F401  (re-exported; defined in settings)
+    SCORE_DIRECTION,
     SCORECARD_DAYS,
     SCORECARD_INIT_HOUR,
+    SCORECARD_LEAD_STEP_HOURS,
     SCORECARD_MAX_LEAD_HOURS,
+    SCORECARD_MIN_INITS,
     SCORECARD_OBS_GRACE_HOURS,
     SCORECARD_OBS_RECENT_DAYS,
     SCORECARD_PERIODS,
@@ -57,8 +59,20 @@ from utils.settings import (
 logger = logging.getLogger(__name__)
 
 PAIR_COLUMNS: list[str] = [
-    "station", "init", "lead_hours", "valid_time", "obs", "fc_mean",
-    "err", "ae", "se", "crps", "spread2", "wet_fc", "wet_obs", "brier",
+    "station",
+    "init",
+    "lead_hours",
+    "valid_time",
+    "obs",
+    "fc_mean",
+    "err",
+    "ae",
+    "se",
+    "crps",
+    "spread2",
+    "wet_fc",
+    "wet_obs",
+    "brier",
 ]
 _PAIR = "pair"
 
@@ -70,7 +84,9 @@ def _spec(variable: str) -> dict:
         raise ValueError(f"Unknown scorecard variable {variable!r}") from None
 
 
-def _instant_obs(frame: pd.DataFrame, column: str, times: pd.Series, tolerance: str) -> np.ndarray:
+def _instant_obs(
+    frame: pd.DataFrame, column: str, times: pd.Series, tolerance: str
+) -> np.ndarray:
     """The report nearest each time within `tolerance`, NaN where there is none."""
     if column not in frame or frame.empty:
         return np.full(len(times), np.nan)
@@ -97,15 +113,21 @@ def _window_obs(frame: pd.DataFrame, spec: dict, times: pd.Series) -> np.ndarray
         reported = observations.reported_totals(frame, hours)
         if not reported.empty:
             by_end = (
-                reported.assign(valid_time=verification._naive_utc(reported["valid_time"]))
+                reported.assign(
+                    valid_time=verification._naive_utc(reported["valid_time"])
+                )
                 .groupby("valid_time")["value"]
                 .last()
             )
             out = by_end.reindex(pd.DatetimeIndex(ends)).to_numpy(dtype=float)
 
     if spec["obs"] in frame:
-        hourly = pd.DataFrame({"valid_time": frame["valid_time"], "value": frame[spec["obs"]]})
-        summed = verification.obs_window_total(hourly, ends, hours).to_numpy(dtype=float)
+        hourly = pd.DataFrame(
+            {"valid_time": frame["valid_time"], "value": frame[spec["obs"]]}
+        )
+        summed = verification.obs_window_total(hourly, ends, hours).to_numpy(
+            dtype=float
+        )
         out = np.where(np.isfinite(out), out, summed)
     return out
 
@@ -185,7 +207,9 @@ def reference_leads(cube: xr.DataArray) -> xr.DataArray:
     """
     cube = cube.sel(lead_hours=cube["lead_hours"] <= SCORECARD_MAX_LEAD_HOURS)
     valid = pd.DatetimeIndex(pd.to_datetime(cube["valid_time"].values))
-    on_init_hour = (valid.hour == SCORECARD_INIT_HOUR) & (valid.minute == 0) & (valid.second == 0)
+    on_init_hour = (
+        (valid.hour == SCORECARD_INIT_HOUR) & (valid.minute == 0) & (valid.second == 0)
+    )
     return cube.isel(lead_hours=np.flatnonzero(on_init_hour))
 
 
@@ -298,7 +322,10 @@ def pair_scores(matched: xr.Dataset, variable: str) -> pd.DataFrame:
     if dropped:
         logger.warning(
             "%s %s %s: %d pair(s) with a non-finite forecast not scored",
-            matched.attrs.get("store"), variable, matched.attrs.get("init"), dropped,
+            matched.attrs.get("store"),
+            variable,
+            matched.attrs.get("init"),
+            dropped,
         )
     keep = np.flatnonzero(has_obs & fc_ok)
     if keep.size == 0:
@@ -317,7 +344,9 @@ def pair_scores(matched: xr.Dataset, variable: str) -> pd.DataFrame:
     ae = scores.continuous.mae(fc_mean, obs, preserve_dims=keep_dims)
     se = scores.continuous.mse(fc_mean, obs, preserve_dims=keep_dims)
     crps = scores.probability.crps_for_ensemble(
-        fc, obs, "member",
+        fc,
+        obs,
+        "member",
         method="fair" if n_members > 1 else "ecdf",
         preserve_dims=keep_dims,
     )
@@ -331,12 +360,19 @@ def pair_scores(matched: xr.Dataset, variable: str) -> pd.DataFrame:
         wet_fc = (fc_mean.values >= threshold).astype(float)
         wet_obs = (obs.values >= threshold).astype(float)
     if "brier" in spec["scores"] and threshold is not None and n_members > 1:
-        brier = scores.probability.brier_score_for_ensemble(
-            fc, obs, "member", threshold,
-            preserve_dims=keep_dims,
-            fair_correction=True,
-            event_threshold_operator=operator.ge,
-        ).squeeze("threshold", drop=True).values
+        brier = (
+            scores.probability.brier_score_for_ensemble(
+                fc,
+                obs,
+                "member",
+                threshold,
+                preserve_dims=keep_dims,
+                fair_correction=True,
+                event_threshold_operator=operator.ge,
+            )
+            .squeeze("threshold", drop=True)
+            .values
+        )
     else:
         brier = nan
 
@@ -374,13 +410,16 @@ def _div(num: np.ndarray, den: np.ndarray) -> np.ndarray:
     num = np.asarray(num, dtype=float)
     den = np.asarray(den, dtype=float)
     ok = np.isfinite(den) & (den != 0)
-    return np.divide(num, den, out=np.full(np.broadcast(num, den).shape, np.nan), where=ok)
+    return np.divide(
+        num, den, out=np.full(np.broadcast(num, den).shape, np.nan), where=ok
+    )
 
 
 def contingency_scores(
     h: np.ndarray, m: np.ndarray, f: np.ndarray, cn: np.ndarray
 ) -> dict[str, np.ndarray]:
-    """ETS, HSS and frequency bias from summed hits, misses, false alarms, correct negatives.
+    """ETS, HSS and frequency bias from summed hits, misses, false alarms and
+    correct negatives.
 
     The dynamical.org formulas, identical to `scores.categorical.
     BinaryContingencyManager` (which takes events, not counts):
@@ -412,7 +451,9 @@ def _keep_common_inits(rows: pd.DataFrame) -> pd.DataFrame:
     """Per variable, only the inits every store present for that variable holds."""
     held = rows.groupby(["variable", "init"])["store"].nunique()
     stores = rows.groupby("variable")["store"].nunique()
-    common = held[held.to_numpy() == stores.reindex(held.index.get_level_values(0)).to_numpy()]
+    common = held[
+        held.to_numpy() == stores.reindex(held.index.get_level_values(0)).to_numpy()
+    ]
     keys = pd.MultiIndex.from_arrays([rows["variable"], rows["init"]])
     return rows[keys.isin(common.index)]
 
@@ -441,15 +482,18 @@ def aggregate(
         Group keys besides `variable` (always added): `("store", "lead_day")`,
         `("store", "station")` (pools every lead) or
         `("store", "lead_day", "station")` (select a lead from the result; never
-        pre-filter `rows` by lead, which changes the bias-correction offset). `lead_day` = ceil(lead_hours/24),
-        so day 1 is (0, 24] h; T+0 pairs are dropped.
+        pre-filter `rows` by lead, which changes the bias-correction offset).
+        `lead_day` = ceil(lead_hours/24), so day 1 is (0, 24] h; T+0 pairs
+        and leads off the `SCORECARD_LEAD_STEP_HOURS` step are dropped (R23),
+        so every store's bin holds the same valid hours.
     end : pandas.Timestamp, optional
         Last init date of the period.
     common_inits : bool
         Per variable, keep only the inits every store in `rows` holds (after
         the period cut), so models are compared on the same cases.
     min_n : int
-        Groups with fewer pairs are flagged `low_n`.
+        Groups with fewer pairs, or resting on fewer than
+        `SCORECARD_MIN_INITS` runs (R24), are flagged `low_n`.
 
     Returns
     -------
@@ -478,8 +522,14 @@ def aggregate(
     """
     by = tuple(by)
     keys = ["variable", *[k for k in by if k != "variable"]]
-    rows = rows[rows["lead_hours"] > 0].copy()
-    rows["lead_day"] = np.ceil(rows["lead_hours"].to_numpy(dtype=float) / 24.0).astype(int)
+    # R23: one valid-hour set per bin for every store (hourly GFS/ICON-EU,
+    # 3-hourly IFS ENS/GEFS, 6-hourly AIFS), before the bias offset.
+    lead = rows["lead_hours"].to_numpy(dtype=float)
+    on_step = np.isclose(np.mod(lead, SCORECARD_LEAD_STEP_HOURS), 0.0)
+    rows = rows[(lead > 0) & on_step].copy()
+    rows["lead_day"] = np.ceil(rows["lead_hours"].to_numpy(dtype=float) / 24.0).astype(
+        int
+    )
 
     offset = rows.groupby(["store", "station", "variable"])["err"].transform("mean")
     rows["err_bc"] = rows["err"] - offset
@@ -538,12 +588,14 @@ def aggregate(
     for name, values in cat.items():
         out[name] = np.where(no_cat, np.nan, values)
 
-    offered = out["variable"].map(lambda v: set(SCORECARD_VARIABLES.get(v, {}).get("scores", ())))
+    offered = out["variable"].map(
+        lambda v: set(SCORECARD_VARIABLES.get(v, {}).get("scores", ()))
+    )
     for score in SCORE_COLUMNS:
         mask = offered.map(lambda s, score=score: score in s).to_numpy(dtype=bool)
         out[score] = out[score].where(mask)
 
-    out["low_n"] = out["n"] < min_n
+    out["low_n"] = (out["n"] < min_n) | (out["n_inits"] < SCORECARD_MIN_INITS)
     return out[[*keys, *_COUNT_COLUMNS, *SCORE_COLUMNS]]
 
 
@@ -599,7 +651,8 @@ _OBS_LAG_ALLOWANCE_DAYS = 30
 
 
 def _window(anchor: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """First and last init date kept: SCORECARD_DAYS inits ending the day before `anchor`.
+    """First and last init date kept: SCORECARD_DAYS inits ending the day
+    before `anchor`.
 
     `anchor` is the observation end (refresh) or today; its date is used.
     """
@@ -704,7 +757,9 @@ def _network(
             return saved[0]
         why = "SCORECARD_STATIONS changed"
     else:
-        why = "reselect requested" if reselect else "none saved or its window is too old"
+        why = (
+            "reselect requested" if reselect else "none saved or its window is too old"
+        )
     logger.info("Selecting the station network (%s)", why)
     net = station_network.select_network(start, end)
     station_network.save_network(net, start, end, configured)
@@ -732,8 +787,8 @@ def refresh(
         (`load_lacking`) so the page can name it.
     today : pandas.Timestamp
         The window is the SCORECARD_DAYS 00 UTC inits ending the day before the
-        day of the median last report (GHCNh lags ~6 days), not today. Files for older inits
-        are deleted.
+        day of the median last report (GHCNh lags ~6 days), not today. Files
+        for older inits are deleted.
     backfill : bool
         Oldest init first (a resumable walk of the whole window); else newest
         first.
@@ -779,8 +834,14 @@ def refresh(
         # then read. A network changed by selection is read for its new ids.
         status.report("Reading observations")
         saved = station_network.load_network()
-        same_list = station_network.load_configured() == tuple(sorted(SCORECARD_STATIONS))
-        if saved is not None and not saved[0].empty and (same_list or not SCORECARD_STATIONS):
+        same_list = station_network.load_configured() == tuple(
+            sorted(SCORECARD_STATIONS)
+        )
+        if (
+            saved is not None
+            and not saved[0].empty
+            and (same_list or not SCORECARD_STATIONS)
+        ):
             probe_ids = [str(i) for i in saved[0]["id"]]
         else:
             probe_ids = list(SCORECARD_STATIONS)
@@ -809,23 +870,35 @@ def refresh(
         obs_end = _obs_end(obs, cap=day + pd.Timedelta(days=1))
         logger.info(
             "Scorecard window: inits %s to %s (observations anchor %s)",
-            f"{first:%Y-%m-%d}", f"{last:%Y-%m-%d}", f"{anchor:%Y-%m-%d}",
+            f"{first:%Y-%m-%d}",
+            f"{last:%Y-%m-%d}",
+            f"{anchor:%Y-%m-%d}",
         )
         removed = scores_db.prune_scorecard(first)
         if removed:
-            logger.info("Removed %d scorecard file(s) older than %s", removed, f"{first:%Y-%m-%d}")
+            logger.info(
+                "Removed %d scorecard file(s) older than %s",
+                removed,
+                f"{first:%Y-%m-%d}",
+            )
 
         subsets = {}
         for variable in todo_vars:
             column = station_network._OK_COLUMN.get(variable)
             # A gridded reference has no completeness screen: every station.
-            subset = (net if column is None else net[net[column]]).reset_index(drop=True)
+            subset = (net if column is None else net[net[column]]).reset_index(
+                drop=True
+            )
             if subset.empty:
-                logger.info("Skipping %s: no station passed its completeness screen", variable)
+                logger.info(
+                    "Skipping %s: no station passed its completeness screen", variable
+                )
                 continue
             subsets[variable] = (subset, scores_db.station_hash(subset))
 
-        wanted = pd.date_range(first, last, freq="D") + pd.Timedelta(hours=SCORECARD_INIT_HOUR)
+        wanted = pd.date_range(first, last, freq="D") + pd.Timedelta(
+            hours=SCORECARD_INIT_HOUR
+        )
         references = _ReferenceReader(subsets)
         plan, lacking = [], {}
         for store in stores:
@@ -843,12 +916,19 @@ def refresh(
                     continue
                 lacking.setdefault(variable, {})[store] = not has
                 if not has:
-                    logger.info("Skipping %s for %s: the store does not hold it", variable, store)
+                    logger.info(
+                        "Skipping %s for %s: the store does not hold it",
+                        variable,
+                        store,
+                    )
                     continue
                 missing = [t for t in wanted if t not in held]
                 if missing:
                     logger.info(
-                        "%s %s: %d init(s) not in the store, skipped", store, variable, len(missing)
+                        "%s %s: %d init(s) not in the store, skipped",
+                        store,
+                        variable,
+                        len(missing),
                     )
                 for init in wanted:
                     if init in held:
@@ -859,8 +939,11 @@ def refresh(
         for done, (init, store, variable) in enumerate(plan):
             if max_minutes is not None and (_clock() - started) / 60.0 >= max_minutes:
                 logger.info(
-                    "Time limit of %s min reached: %d of %d item(s) left for the next run",
-                    max_minutes, len(plan) - done, len(plan),
+                    "Time limit of %s min reached: %d of %d item(s) left for the "
+                    "next run",
+                    max_minutes,
+                    len(plan) - done,
+                    len(plan),
                 )
                 break
             status.report(f"{store} {variable} {init:%Y-%m-%d}", done, len(plan))
@@ -875,17 +958,33 @@ def refresh(
             grid_variable, accum = _grid_read(variable)
             try:
                 cube = earthmover_api.station_cube(
-                    store, grid_variable, init, subset, accum,
+                    store,
+                    grid_variable,
+                    init,
+                    subset,
+                    accum,
                     budget_mb=SCORECARD_READ_BUDGET_MB,
                 )
             except GridDataError as err:
-                logger.warning("%s %s %s not scored (retried next run): %s", store, variable, f"{init:%Y-%m-%d}", err)
+                logger.warning(
+                    "%s %s %s not scored (retried next run): %s",
+                    store,
+                    variable,
+                    f"{init:%Y-%m-%d}",
+                    err,
+                )
                 continue
             if reference:
                 try:
                     refs, failed = references.get(variable, reference_valid_times(cube))
                 except GridDataError as err:
-                    logger.warning("%s %s %s not scored (retried next run): reference: %s", store, variable, f"{init:%Y-%m-%d}", err)
+                    logger.warning(
+                        "%s %s %s not scored (retried next run): reference: %s",
+                        store,
+                        variable,
+                        f"{init:%Y-%m-%d}",
+                        err,
+                    )
                     continue
                 if failed:
                     # Scored without them, and stamped as verified only up to
@@ -900,14 +999,18 @@ def refresh(
             scored = matched["lead_hours"].values <= SCORECARD_MAX_LEAD_HOURS
             last_valid = pd.Timestamp(matched["valid_time"].values[scored].max())
             scores_db.save_scorecard_init(
-                store, variable, init, rows,
+                store,
+                variable,
+                init,
+                rows,
                 obs_end=item_end,
                 network_hash=net_hash,
                 complete=item_end is not None and last_valid <= item_end,
             )
             written += 1
         status.report("Done", len(plan), len(plan))
-    if written or _aggregates_stale():
+    # A pruned init leaves no newer file behind, so staleness alone misses it.
+    if written or removed or _aggregates_stale():
         write_aggregates(anchor)
     return written
 
@@ -935,7 +1038,8 @@ class _ReferenceReader:
         if store not in self._held:
             try:
                 self._held[store] = {
-                    t for t in earthmover_api.available_inits(store)
+                    t
+                    for t in earthmover_api.available_inits(store)
                     if t.hour == SCORECARD_INIT_HOUR
                 }
             except GridDataError as err:
@@ -970,12 +1074,22 @@ class _ReferenceReader:
             if key not in self._cubes:
                 try:
                     cube = earthmover_api.station_cube(
-                        store, grid_variable, valid, subset, accum,
+                        store,
+                        grid_variable,
+                        valid,
+                        subset,
+                        accum,
                         budget_mb=SCORECARD_READ_BUDGET_MB,
                     )
                     self._cubes[key] = cube.sel(lead_hours=cube["lead_hours"] == 0)
                 except GridDataError as err:
-                    logger.warning("%s %s reference %s not read: %s", store, variable, f"{valid:%Y-%m-%d %H}", err)
+                    logger.warning(
+                        "%s %s reference %s not read: %s",
+                        store,
+                        variable,
+                        f"{valid:%Y-%m-%d %H}",
+                        err,
+                    )
                     self._cubes[key] = err
             got = self._cubes[key]
             if isinstance(got, GridDataError):
@@ -1020,7 +1134,11 @@ def _save_window(anchor: pd.Timestamp, lacking: dict[str, dict[str, bool]]) -> N
 
 
 def _store_order(store: str) -> int:
-    return SCORECARD_STORES.index(store) if store in SCORECARD_STORES else len(SCORECARD_STORES)
+    return (
+        SCORECARD_STORES.index(store)
+        if store in SCORECARD_STORES
+        else len(SCORECARD_STORES)
+    )
 
 
 def load_lacking() -> dict[str, list[str]]:
@@ -1040,7 +1158,11 @@ def window_anchor(today: pd.Timestamp) -> pd.Timestamp:
         except ValueError:
             pass
     saved = station_network.load_network()
-    return _naive_utc(saved[2]).normalize() if saved is not None else pd.Timestamp(today).normalize()
+    return (
+        _naive_utc(saved[2]).normalize()
+        if saved is not None
+        else pd.Timestamp(today).normalize()
+    )
 
 
 # --- precomputed aggregates (what the pages read) ---------------------------------
@@ -1050,8 +1172,19 @@ _AGG_META_KEY = b"scorecard"
 STATION_LEAD_DAYS: tuple[int, ...] = (1, 3, 5, 10)
 # Pair columns `aggregate` uses; the rest are dropped on load to bound memory.
 _AGG_PAIR_COLUMNS: list[str] = [
-    "station", "init", "lead_hours", "store", "variable", "err", "ae", "se",
-    "crps", "spread2", "wet_fc", "wet_obs", "brier",
+    "station",
+    "init",
+    "lead_hours",
+    "store",
+    "variable",
+    "err",
+    "ae",
+    "se",
+    "crps",
+    "spread2",
+    "wet_fc",
+    "wet_obs",
+    "brier",
 ]
 
 
@@ -1104,7 +1237,9 @@ def write_aggregates(today: pd.Timestamp) -> Path:
     coords = None
     if net is not None and not net[0].empty:
         frame = net[0]
-        coords = frame.assign(station=frame["id"].astype(str))[["station", "lat", "lon", "name"]]
+        coords = frame.assign(station=frame["id"].astype(str))[
+            ["station", "lat", "lon", "name"]
+        ]
     pieces, stores_present, stations, inits = [], set(), set(), []
     for variable in SCORECARD_VARIABLES:
         rows = scores_db.load_rows(SCORECARD_STORES, [variable], first, last)
@@ -1117,7 +1252,9 @@ def write_aggregates(today: pd.Timestamp) -> Path:
         for period in SCORECARD_PERIODS:
             lead = aggregate(rows, period, by=("store", "lead_day"))
             pieces.append(lead.assign(kind="lead", period_days=period))
-            pieces.append(relative_to(lead).assign(kind="lead_relative", period_days=period))
+            pieces.append(
+                relative_to(lead).assign(kind="lead_relative", period_days=period)
+            )
             # Whole window, all leads: rmse_bc/mae_bc subtract each (store,
             # station) mean error over every lead, as on the other tabs.
             by_station = aggregate(rows, period, by=("store", "lead_day", "station"))

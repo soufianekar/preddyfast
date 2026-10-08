@@ -399,7 +399,10 @@ def _map_panel() -> list:
 
 def layout(**query_params):
     variable = query_choice(
-        query_params, "variable", [o["value"] for o in _VARIABLE_OPTIONS], _DEFAULT_VARIABLE
+        query_params,
+        "variable",
+        [o["value"] for o in _VARIABLE_OPTIONS],
+        _DEFAULT_VARIABLE,
     )
     accum_options, accum_default = _accum_options(variable)
     accum = query_choice(
