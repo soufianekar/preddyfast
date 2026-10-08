@@ -92,3 +92,33 @@ def test_prunes_superseded_runs_and_gallery_months_only():
 def test_an_empty_manifest_never_wipes_the_frames():
     files = ["frames/ifs_ens/2026100600/x/T024.webp", "maps/a.png"]
     assert hub_sync.stale_paths(files, {"stores": {}}, {"items": {}}) == []
+
+
+def test_scorecard_aggregates_are_mirrored_and_never_pruned():
+    from utils import scorecard
+
+    assert scorecard.AGGREGATES_RELPATH in hub_sync.SYNC_PATTERNS
+    # The Paris snapshot (eval/**/*.json) and its per-run scores are gone.
+    assert not any(
+        p.startswith("scores/") or (p.startswith("eval/") and p.endswith(".json"))
+        for p in hub_sync.SYNC_PATTERNS
+    )
+    stale = hub_sync.stale_paths([scorecard.AGGREGATES_RELPATH], _manifest("x"), {"items": {"a": {"path": "maps/a.png"}}})
+    assert stale == []
+
+
+def test_scorecard_working_state_is_never_published():
+    from pathlib import Path
+
+    from utils.settings import PRECOMPUTE_DIR, SCORECARD_DIR
+
+    assert not Path(SCORECARD_DIR).resolve().is_relative_to(Path(PRECOMPUTE_DIR).resolve())
+
+
+def test_load_aggregates_mirrors_first(monkeypatch, tmp_path):
+    from utils import scorecard
+
+    calls = []
+    monkeypatch.setattr(hub_sync, "sync", lambda force=False: calls.append(force) or False)
+    monkeypatch.setattr(scorecard, "PRECOMPUTE_DIR", str(tmp_path))
+    assert scorecard.load_aggregates() is None and calls == [False]

@@ -2,12 +2,12 @@
 
 The scheduled job (`scripts/precompute.py --upload-hf`) uploads everything it
 wrote under `PRECOMPUTE_DIR` — animation frames, gallery images, preset fields,
-station scores, manifests — to the Dataset `PRECOMPUTE_HF_REPO`, then deletes
+the station scorecard's aggregates, manifests — to the Dataset `PRECOMPUTE_HF_REPO`, then deletes
 images no manifest points at any more, so the Dataset holds the newest run only.
 
 The public app never writes there. Images load straight from the Dataset by
 URL (`PRECOMPUTE_URL`); what the server itself reads — manifests, `fields.npz`,
-score Parquet — is mirrored into `PRECOMPUTE_DIR` by `sync`, at most once per
+the scorecard aggregates — is mirrored into `PRECOMPUTE_DIR` by `sync`, at most once per
 `PRECOMPUTE_SYNC_S` across all workers. Without `PRECOMPUTE_HF_REPO` (a local
 run) every function here does nothing.
 """
@@ -27,9 +27,8 @@ _log = logging.getLogger(__name__)
 SYNC_PATTERNS = [
     "latest.json",
     "maps/gallery.json",
-    "eval/**/*.json",
+    "eval/scorecard/aggregates.parquet",
     "frames/**/fields.npz",
-    "scores/**/*.parquet",
 ]
 _STAMP = ".synced"
 _NEVER_UPLOAD = [_STAMP, "**/*.part", ".cache/**"]

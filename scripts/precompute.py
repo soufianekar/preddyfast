@@ -1,4 +1,4 @@
-"""Precompute preset animations and station scores; optionally upload them to R2.
+"""Precompute preset animations and the station scorecard; publish them.
 
 Runs outside the app (cron, or the GitHub Actions workflow once hosting is
 decided), so it has no gunicorn timeout and never forks the app's workers.
@@ -7,11 +7,13 @@ newest finished run, so running it hourly costs a few metadata reads.
 
     python scripts/precompute.py --estimate          # MB per store/region, reads nothing
     python scripts/precompute.py                     # all preset stores, animations only
-    python scripts/precompute.py --stores ifs_ens --scores
+    python scripts/precompute.py --no-animations --scorecard   # station scorecard, newest inits first
+    python scripts/precompute.py --no-animations --scorecard --backfill --max-minutes 300
     python scripts/precompute.py --no-animations --maps   # ERA5 maps gallery (needs CDS)
     python scripts/precompute.py --upload-hf         # then publish to the HF Dataset
 
-Output goes to PRECOMPUTE_DIR (default .precomputed; scores under scores/).
+Output goes to PRECOMPUTE_DIR (default .precomputed; the scorecard's published
+aggregates under eval/scorecard/, its working state in SCORECARD_DIR).
 With PRECOMPUTE_HF_REPO set, the Dataset's manifests are mirrored first so
 products already current are skipped; --upload-hf publishes the tree there and
 prunes superseded runs (needs HF_TOKEN with write access). --upload copies to
@@ -32,10 +34,7 @@ import flask
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from utils.cache import cache
-from utils.settings import (
-    PRECOMPUTE_STATIONS,
-    PRECOMPUTE_STORES,
-)
+from utils.settings import PRECOMPUTE_STORES
 
 _log = logging.getLogger("precompute")
 
@@ -60,7 +59,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--estimate", action="store_true", help="print read volumes and exit")
     parser.add_argument("--force", action="store_true", help="re-render runs already done")
     parser.add_argument("--no-animations", action="store_true")
-    parser.add_argument("--scores", action="store_true", help="also score and draw PRECOMPUTE_STATIONS")
+    parser.add_argument("--scorecard", action="store_true",
+                        help="refresh the station scorecard (rolling window) and its aggregates")
+    parser.add_argument("--backfill", action="store_true",
+                        help="scorecard: walk the window oldest init first")
+    parser.add_argument("--max-minutes", type=float, default=None,
+                        help="scorecard: stop cleanly between inits after this long; rerun to resume")
+    parser.add_argument("--reselect", action="store_true",
+                        help="scorecard: select a new station network (re-reads every init)")
+    parser.add_argument("--aggregates-only", action="store_true",
+                        help="rebuild only the scorecard aggregates file from stored rows")
     parser.add_argument("--maps", nargs="*", metavar="ITEM", help="draw the ERA5 maps gallery (all, or these items)")
     parser.add_argument("--upload", action="store_true", help="copy outputs to R2 afterwards")
     parser.add_argument("--upload-hf", action="store_true", help="publish outputs to PRECOMPUTE_HF_REPO")
@@ -76,7 +84,6 @@ def main(argv: list[str] | None = None) -> int:
         # manifests must not be overwritten by the Dataset's older ones.
         hub_sync.sync(force=True)
         hub_sync.freeze()
-        from utils import eval_snapshot
 
         stores = tuple(args.stores)
         # Narrow the preset matrix for a trial run (the manifest records what was done).
@@ -93,21 +100,46 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         started = time.time()
-        if not args.no_animations:
+        if not (args.no_animations or args.aggregates_only):
             manifest = precomputed.load_manifest()
             written = precomputed.refresh(stores, manifest, force=args.force)
             _log.info("%d animations written", written)
-        if args.scores:
-            # Fixed models, not --stores: the page's figures compare these.
-            done = eval_snapshot.refresh(PRECOMPUTE_STATIONS)
-            _log.info("evaluation: %d evaluations drawn", done)
+        if args.aggregates_only:
+            import pandas as pd
+
+            from utils import scorecard
+
+            path = scorecard.write_aggregates(
+                scorecard.window_anchor(pd.Timestamp.now("UTC").tz_localize(None))
+            )
+            _log.info("scorecard aggregates: %s", path)
+        if args.scorecard:
+            import pandas as pd
+
+            from utils import scorecard
+            from utils.settings import SCORECARD_STORES, SCORECARD_VARIABLES
+
+            # Fixed models, not --stores: the scorecard compares these.
+            try:
+                wrote = scorecard.refresh(
+                    SCORECARD_STORES,
+                    tuple(SCORECARD_VARIABLES),
+                    pd.Timestamp.now("UTC").tz_localize(None).normalize(),
+                    backfill=args.backfill,
+                    max_minutes=args.max_minutes,
+                    reselect=args.reselect,
+                )
+                _log.info("scorecard: %d init files written", wrote)
+            except scorecard.ObservationError as exc:
+                # GHCNh unreachable: keep the published scorecard, still publish the rest.
+                _log.error("scorecard not refreshed: %s", exc)
         if args.maps is not None:
             from utils import map_gallery
 
             drawn = map_gallery.refresh(force=args.force, keys=args.maps or None)
             _log.info("maps gallery: %d images written", drawn)
         if args.upload:
-            # Scores live under PRECOMPUTE_DIR now, so the tree carries them.
+            # The scorecard aggregates live under PRECOMPUTE_DIR, so the tree carries them.
             sent = precomputed.upload(_r2_client(), os.environ["R2_BUCKET"])
             _log.info("uploaded %d files", sent)
         if args.upload_hf:

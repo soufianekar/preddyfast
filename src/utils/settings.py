@@ -1768,8 +1768,9 @@ OBS_CACHE_DIR: str = os.environ.get("OBS_CACHE_DIR", ".obs-cache")
 # theme only, default palette, 24 h frames to T+360. Wind is 10 m gust: the
 # archive has no 10 m wind speed (AIFS has no gust and is skipped for it).
 PRECOMPUTE_DIR: str = os.environ.get("PRECOMPUTE_DIR", ".precomputed")
-# Per-run verification scores (utils/scores_db.py), kept for good. Inside the
-# precomputed tree, so one upload and one mirror carry them (utils/hub_sync.py).
+# Per-run verification scores (utils/scores_db.py) of `evaluation.evaluate_point`.
+# The public site neither writes nor mirrors them: its Evaluation view is the
+# station scorecard, which keeps its own state in SCORECARD_DIR.
 SCORES_DIR: str = os.environ.get("SCORES_DIR", f"{PRECOMPUTE_DIR}/scores")
 # The station scorecard job's working state (per-init rows, frozen network,
 # window). Outside PRECOMPUTE_DIR: never uploaded; the workflow keeps it with
@@ -1802,9 +1803,6 @@ PRECOMPUTE_VARIABLES: dict[str, int | None] = {
 PRECOMPUTE_STATISTICS: dict[str, tuple[str, ...]] = {"precipitation_surface": ("mean", "range")}
 PRECOMPUTE_STEP_HOURS: int = 24
 PRECOMPUTE_HORIZON_HOURS: int = 360
-PRECOMPUTE_STATIONS: tuple[str, ...] = ("FRM00007156",)
-# Models the public Evaluation snapshots score (utils/eval_snapshot.py).
-EVAL_SNAPSHOT_STORES: tuple[str, ...] = ("ifs_ens", "aifs_ens")
 OBS_TIMEOUT_S: float = 30.0
 OBS_STATION_LIST_MAX_AGE_H: float = 24 * 7
 # The current year's file grows through the day; past years never change.
