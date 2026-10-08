@@ -28,7 +28,7 @@ that does the expensive work offline.
 |---|---|---|
 | **Weather · At a location** | Meteogram for any point: several ensemble systems overlaid, members as box plots per window, deterministic models as dashed lines, the init time of every run stated. Latest runs or any archived past run. | Open-Meteo ensemble and forecast APIs; dynamical.org archives |
 | **Weather · Area average** | Area-averaged ensemble for a box or a standard region (ECMWF, WMO, IPCC AR6): member spaghetti, percentile envelope, and a map animation of mean, percentile or spread. | ECMWF IFS ENS / AIFS ENS, NOAA GEFS / GFS archives (Icechunk/Zarr on AWS Open Data) |
-| **Weather · Evaluation** | Archived runs scored per lead time against hourly station reports (NOAA GHCNh), satellite precipitation (NASA IMERG) or a T+0 reference: fair CRPS, RMSE, bias, spread/skill, Brier. | Same archives, GHCNh, IMERG |
+| **Weather · Evaluation** | A station scorecard: seven archived models (IFS ENS, AIFS ENS, GEFS, IFS control, AIFS Single, GFS, ICON-EU) scored over the latest 14 days of 00 UTC runs at eight European city airports, by lead day — 2 m temperature, 6 h precipitation and 10 m wind against hourly reports (NOAA GHCNh), Z500 against IFS control T+0. RMSE, MAE, bias, fair CRPS, bias-corrected RMSE/MAE, spread/skill, ETS, HSS, frequency bias, Brier; absolute or relative to IFS ENS, and per station on a map. | Same archives, GHCNh |
 | **Climate · Maps** | ERA5 monthly maps for the latest month: temperature and precipitation anomalies against 1991–2020, Europe and global. | Copernicus Climate Data Store |
 
 ## The decisions that matter
@@ -55,10 +55,13 @@ them. Each of these is enforced in code and covered by tests (`pytest -q`).
   windows rolling, because overlapping boxes would invite reading the window
   sliding as signal.
 - **Verification states its own bias.** Ensembles are scored with the fair CRPS
-  on their own members. The IFS-control T+0 reference favours IFS and AIFS, and
-  the footer says so. Precipitation is verified only where a complete window
-  exists: station 24 h totals where reported, complete hourly sums otherwise,
-  IMERG elsewhere, never a T+0.
+  on their own members; a deterministic model's CRPS is its MAE, and the
+  figure says so. Models are compared on the inits they all hold. Each station
+  is scored at its own grid cell in each model's grid, without interpolation or
+  height correction, and the figures say that too. Z500 has no station
+  observation: its IFS-control T+0 reference favours IFS and AIFS, stated in
+  the footer. Precipitation is verified only where a complete 6 h window
+  exists: the station's reported total, else complete hourly sums, never a T+0.
 - **Reads are budgeted before they happen.** Every gridded request is costed in
   MB from each store's own chunking (tiles × lead blocks × member blocks) and
   refused with the estimate when over budget. Nothing is read first.
@@ -68,7 +71,7 @@ them. Each of these is enforced in code and covered by tests (`pytest -q`).
 | Piece | Service |
 |---|---|
 | App | Hugging Face Spaces (Docker, 2 vCPU, 16 GB), Dash under gunicorn |
-| Precomputed products | A public Hugging Face Dataset: preset animations, the maps gallery, evaluation figures |
+| Precomputed products | A public Hugging Face Dataset: preset animations, the maps gallery, the scorecard's aggregates (`eval/scorecard/aggregates.parquet`) |
 | Scheduled job | GitHub Actions running `scripts/precompute.py` after the 00/12 UTC runs |
 | Data | Open-Meteo (free tier), dynamical.org Icechunk stores (anonymous AWS Open Data), Copernicus CDS (job only), NOAA GHCNh, NASA IMERG |
 
@@ -88,7 +91,7 @@ A public site on free tiers needs guards. They are all in
 
 ```
 GitHub Actions (cron) ── scripts/precompute.py ──► HF Dataset (PNG / WebP / JSON / npz)
-                                                     │ images by URL      │ manifests, scores
+                                                     │ images by URL      │ manifests, scorecard
                                                      ▼                    ▼
 Browser ◄────────────── Dash pages ◄──── utils/ (pure, tested) ◄── hub_sync mirror
                                            ├─ openmeteo_api   points, latest runs (budgeted)
@@ -116,8 +119,12 @@ Build the precomputed products into `.precomputed/` (the maps gallery needs a
 free CDS key in `~/.cdsapirc` or `CDS_KEY`):
 
 ```bash
-python scripts/precompute.py --scores --maps
+python scripts/precompute.py --scorecard --maps
 ```
+
+The scorecard fills its 14-day window newest init first; to fill it from
+scratch, run `--no-animations --scorecard --backfill --max-minutes 300` until a
+run writes nothing new (the workflow's `backfill` input does the same).
 
 ## Deploying your own copy
 

@@ -7,9 +7,16 @@
 #   variables PRECOMPUTE_HF_REPO ("user/preddyfast-data")
 #
 # Each run first mirrors what the Dataset already holds, so a store whose
-# newest run is already published, a gallery month already drawn, or a run
-# already scored is skipped. The point and CDS caches are kept between runs
-# by actions/cache, so only new runs are read from the archives.
+# newest run is already published or a gallery month already drawn is
+# skipped. The point, CDS and observation caches and the scorecard's working
+# state (.scorecard: per-init rows, frozen network) are kept between runs by
+# actions/cache, so only new runs are read from the archives and an init is
+# rescored, as observations arrive, from extracts already on disk.
+#
+# The scorecard fills its 14-day window newest init first, as much as one run
+# allows. To fill it from scratch, dispatch with `backfill` ticked (oldest
+# first, stops cleanly after 300 min) and repeat until a run writes nothing
+# new; each run resumes where the last stopped.
 #
 #  schedule:
 #    - cron: "30 8 * * *"    # after the 00 UTC runs reach the archive
@@ -20,10 +27,14 @@ name: precompute
 on:
   workflow_dispatch:
     inputs:
-      scores:
-        description: "Score and draw the evaluation stations"
+      scorecard:
+        description: "Refresh the station scorecard"
         type: boolean
         default: true
+      backfill:
+        description: "Scorecard backfill: oldest init first, stop after 300 min (repeat until done)"
+        type: boolean
+        default: false
       maps:
         description: "Draw the ERA5 maps gallery (needs CDS_KEY)"
         type: boolean
@@ -40,13 +51,16 @@ concurrency:
 jobs:
   precompute:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # A backfill stops itself at 300 min; the margin lets the upload and the
+    # cache save (skipped when a job times out) still run.
+    timeout-minutes: ${{ inputs.backfill && 350 || 120 }}
     env:
       PRECOMPUTE_HF_REPO: ${{ vars.PRECOMPUTE_HF_REPO }}
       CDS_KEY: ${{ secrets.CDS_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       POINT_CACHE_DIR: .point-cache
       CDS_CACHE_DIR: .cds-cache
+      SCORECARD_DIR: .scorecard
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -60,11 +74,13 @@ jobs:
             .point-cache
             .cds-cache
             .obs-cache
+            .scorecard
           key: archive-${{ github.run_id }}
           restore-keys: archive-
       - name: Precompute
         run: >
           python scripts/precompute.py
-          ${{ (github.event_name == 'schedule' || inputs.scores) && '--scores' || '' }}
+          ${{ (github.event_name == 'schedule' || inputs.scorecard || inputs.backfill) && '--scorecard' || '' }}
+          ${{ inputs.backfill && '--backfill --max-minutes 300' || '' }}
           ${{ (github.event_name == 'schedule' || inputs.maps) && '--maps' || '' }}
           ${{ (github.event_name == 'schedule' || inputs.upload) && '--upload-hf' || '' }}

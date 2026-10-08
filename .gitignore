@@ -28,3 +28,6 @@ notebooks/output/
 .scores/
 .history/
 .precomputed/
+
+# Station scorecard job state (see utils/scores_db.scorecard_root)
+.scorecard/
