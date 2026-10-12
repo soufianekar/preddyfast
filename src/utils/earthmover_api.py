@@ -1341,6 +1341,54 @@ def point_archive(
 # 2: read per chunk-tile group (R21) instead of one network bbox.
 _STATION_CUBE_VERSION = 2
 
+# A transient network failure (reset connection, DNS) inside one box read is
+# retried, sleeping this long before attempts 2 and 3; then the item is refused.
+READ_RETRY_BACKOFF_S = (2.0, 8.0)
+_sleep = time.sleep  # module-level so tests need not wait
+
+
+def _read_station_cells_retrying(
+    store: str,
+    variable: str,
+    init: pd.Timestamp,
+    ds,
+    component: str,
+    bounds: tuple,
+    rows: np.ndarray,
+    cols: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """`_read_station_cells`, retrying an `icechunk.IcechunkError`.
+
+    Up to `len(READ_RETRY_BACKOFF_S) + 1` attempts; each retry is logged. The
+    last failure raises `GridDataError` naming store, variable and init.
+    """
+    import icechunk  # function-local, as in `_open_dataset`
+
+    attempts = len(READ_RETRY_BACKOFF_S) + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            return _read_station_cells(ds, component, init, bounds, rows, cols)
+        except icechunk.IcechunkError as err:
+            lines = str(err).strip().splitlines()
+            detail = lines[-1].strip() if lines else type(err).__name__
+            if attempt == attempts:
+                raise GridDataError(
+                    f"Reading {store} {variable} (init {init:%Y-%m-%d %H} UTC) "
+                    f"failed after {attempts} attempts: {detail}"
+                ) from err
+            wait = READ_RETRY_BACKOFF_S[attempt - 1]
+            _log.warning(
+                "%s %s init %s: read failed (attempt %d/%d), retrying in %.0f s: %s",
+                store,
+                variable,
+                f"{init:%Y-%m-%d %H}",
+                attempt,
+                attempts,
+                wait,
+                detail,
+            )
+            _sleep(wait)
+
 
 def _check_station_run_complete(
     values: np.ndarray,
@@ -1756,8 +1804,8 @@ def station_cube(
     for comp in components:
         values = None
         for bounds, index in plans[comp]:
-            got, members, lead_hours = _read_station_cells(
-                ds, comp, init, bounds, rows[index], cols[index]
+            got, members, lead_hours = _read_station_cells_retrying(
+                store, variable, init, ds, comp, bounds, rows[index], cols[index]
             )
             if values is None:
                 values = np.full((rows.size, *got.shape[1:]), np.nan)

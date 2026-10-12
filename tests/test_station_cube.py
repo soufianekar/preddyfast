@@ -355,3 +355,48 @@ def test_station_cube_version_is_2_so_tile_group_files_never_reuse_v1(monkeypatc
     now = em._station_cache_path("ifs_ens", "temperature_2m", INIT, a, None)
     monkeypatch.setattr(em, "_STATION_CUBE_VERSION", 1)
     assert em._station_cache_path("ifs_ens", "temperature_2m", INIT, a, None) != now
+
+
+def _flaky_read(env, monkeypatch, failures):
+    """Make `_read_station_cells` raise IcechunkError `failures` times, then work."""
+    import icechunk
+
+    real, sleeps, calls = em._read_station_cells, [], []
+    monkeypatch.setattr(em, "_sleep", sleeps.append)
+
+    def read(*args, **kwargs):
+        calls.append(1)
+        if len(calls) <= failures:
+            raise icechunk.IcechunkError(
+                "I/O error: streaming error\nConnection reset by peer"
+            )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(em, "_read_station_cells", read)
+    return calls, sleeps
+
+
+def test_a_transient_icechunk_error_is_retried_and_logged(env, monkeypatch, caplog):
+    env["stores"]["ifs_ens"] = _ds({"temperature_2m": _cell_value})
+    calls, sleeps = _flaky_read(env, monkeypatch, failures=1)
+    st = _stations(("A", 50.0, 10.0))
+    with caplog.at_level("WARNING", logger=em.__name__):
+        cube = em.station_cube("ifs_ens", "temperature_2m", INIT, st, None)
+    assert cube.dims == ("station", "member", "lead_hours")
+    assert len(calls) == 2 and sleeps == [em.READ_RETRY_BACKOFF_S[0]]
+    retries = [r for r in caplog.records if "attempt 1/3" in r.getMessage()]
+    assert len(retries) == 1 and "ifs_ens" in retries[0].getMessage()
+
+
+def test_a_persistent_icechunk_error_raises_grid_data_error_after_three_attempts(
+    env, monkeypatch, tmp_path
+):
+    env["stores"]["ifs_ens"] = _ds({"temperature_2m": _cell_value})
+    calls, sleeps = _flaky_read(env, monkeypatch, failures=99)
+    st = _stations(("A", 50.0, 10.0))
+    message = r"ifs_ens.*temperature_2m.*Connection reset by peer"
+    with pytest.raises(em.GridDataError, match=message) as exc:
+        em.station_cube("ifs_ens", "temperature_2m", INIT, st, None)
+    assert type(exc.value.__cause__).__name__ == "IcechunkError"
+    assert len(calls) == 3 and len(sleeps) == 2
+    assert not list(tmp_path.rglob("*.nc")) and not list(tmp_path.rglob("*.part"))
