@@ -1328,3 +1328,43 @@ def load_aggregates() -> tuple[pd.DataFrame, dict] | None:
     except OSError:
         return None
     return _read_aggregates(str(path), mtime)
+
+
+# ---------------------------------------------------------------------------
+# ERA5 orography at the station cells (built once by
+# scripts/build_station_orography.py; the app never fetches it)
+# ---------------------------------------------------------------------------
+OROGRAPHY_PATH: Path = (
+    Path(__file__).resolve().parent.parent / "data" / "scorecard_orography.json"
+)
+
+
+@functools.lru_cache(maxsize=1)
+def _read_orography(path: Path) -> dict[str, float]:
+    try:
+        cells = json.loads(path.read_text())["cells"]
+        return {sid: float(c["z_m"]) for sid, c in cells.items()}
+    except FileNotFoundError:
+        logger.warning("No station orography at %s: height corrections are NaN", path)
+    except (ValueError, KeyError, TypeError) as err:
+        logger.warning("Unreadable station orography %s (%s)", path, err)
+    return {}
+
+
+def station_orography() -> dict[str, float]:
+    """Station id -> ERA5 cell orography `z_m` (m); `{}` if the file is missing."""
+    return _read_orography(OROGRAPHY_PATH)
+
+
+def station_dz(ids: list[str], elev: dict[str, float]) -> np.ndarray:
+    """`z_m - elev_m` per station id (m); NaN where either is missing.
+
+    A positive value is a cell higher than the station (model too high).
+    """
+    z = station_orography()
+    out = np.full(len(ids), np.nan)
+    for i, sid in enumerate(ids):
+        zm, e = z.get(sid), elev.get(sid)
+        if zm is not None and e is not None:
+            out[i] = zm - float(e)
+    return out
