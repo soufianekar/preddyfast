@@ -123,6 +123,9 @@ class Env:
         monkeypatch.setattr(station_network, "select_network", lambda s, e: self.net)
         monkeypatch.setattr(station_network, "save_network", self.save_network)
         monkeypatch.setattr(station_network, "load_configured", lambda: ())
+        monkeypatch.setattr(
+            station_network, "load_rule_hash", lambda: station_network.rule_fingerprint()
+        )
         monkeypatch.setattr(station_network, "network_obs", self.network_obs)
 
     def save_network(self, net, start, end, configured=()):

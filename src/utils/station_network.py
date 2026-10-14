@@ -8,6 +8,7 @@ is localized.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -48,6 +49,42 @@ _OK_COLUMN = {
     "precipitation_24h": "ok_precip",
     "wind_speed_10m": "ok_wind",
 }
+
+
+# Bump when `select_network` / `completeness` change in a way the settings
+# below do not show (it is part of the rule fingerprint).
+SELECTION_VERSION = 1
+# SCORECARD_VARIABLES keys the selector reads to decide a station's ok_* flag.
+_RULE_KEYS = (
+    "obs",
+    "obs_reported",
+    "window_hours",
+    "window_end_hour",
+    "hourly_fallback",
+    "completeness",
+    "tolerance",
+    "reference",
+)
+
+
+def rule_fingerprint() -> str:
+    """Hash of everything that decides a station's `ok_*` flags.
+
+    A frozen network is only valid for the rule it was selected under; the
+    hash is saved beside it and compared by `scorecard.refresh`. JSON with
+    sorted keys, so dict ordering never changes it.
+    """
+    rule = {
+        "version": SELECTION_VERSION,
+        "variables": {
+            key: {k: spec.get(k) for k in _RULE_KEYS}
+            for key, spec in SCORECARD_VARIABLES.items()
+        },
+        "fixed_precip_completeness": SCORECARD_FIXED_PRECIP_COMPLETENESS,
+        "stations": sorted(SCORECARD_STATIONS),
+    }
+    text = json.dumps(rule, sort_keys=True, default=str)
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def _obs_columns() -> list[str]:
@@ -361,7 +398,9 @@ def save_network(
     The window goes in `stations.window.json`, so an empty network (screened,
     nobody passed) still carries it. The window is written last: a reader that
     finds it finds the parquet too. `configured` is the `SCORECARD_STATIONS`
-    list the selection was made for, so a changed list can be noticed.
+    list the selection was made for, so a changed list can be noticed; the
+    sidecar also carries `rule_hash` (`rule_fingerprint`), so a changed
+    qualification rule can be.
     """
     path = _network_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -370,6 +409,7 @@ def save_network(
         "start": _utc(start).isoformat(),
         "end": _utc(end).isoformat(),
         "configured": sorted(configured),
+        "rule_hash": rule_fingerprint(),
     }
     _write_atomic(_window_path(), lambda p: p.write_text(json.dumps(window)))
     return path
@@ -402,3 +442,14 @@ def load_configured() -> tuple[str, ...] | None:
     if not wpath.exists():
         return None
     return tuple(sorted(json.loads(wpath.read_text()).get("configured", [])))
+
+
+def load_rule_hash() -> str | None:
+    """The `rule_fingerprint` the saved network was selected under.
+
+    None when nothing is saved or the sidecar predates the key.
+    """
+    wpath = _window_path()
+    if not wpath.exists():
+        return None
+    return json.loads(wpath.read_text()).get("rule_hash")

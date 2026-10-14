@@ -1690,14 +1690,20 @@ def _network(
     Selection reads ~GHCNh for the candidates and a new list re-keys the
     station cube cache (a full re-read), so it happens only when none is saved,
     its window ended before `start`, the configured `SCORECARD_STATIONS` differ
-    from the saved selection, or `reselect`.
+    from the saved selection, the qualification rule changed
+    (`station_network.rule_fingerprint`; a sidecar without one counts), or
+    `reselect`. Cube cache keys follow each variable's station subset, so a
+    rule change that alters only one variable's subset re-reads only that one.
     """
     saved = station_network.load_network()
     configured = tuple(sorted(SCORECARD_STATIONS))
     if saved is not None and not reselect and _naive_utc(saved[2]) >= start:
-        if station_network.load_configured() == configured:
+        if station_network.load_rule_hash() != station_network.rule_fingerprint():
+            why = "selection rule changed"
+        elif station_network.load_configured() != configured:
+            why = "SCORECARD_STATIONS changed"
+        else:
             return saved[0]
-        why = "SCORECARD_STATIONS changed"
     else:
         why = (
             "reselect requested" if reselect else "none saved or its window is too old"

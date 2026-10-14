@@ -1,5 +1,7 @@
 """Station network selection: synthetic observations, no network."""
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -398,3 +400,43 @@ def test_save_network_records_the_configured_list(monkeypatch, tmp_path):
     assert sn.load_configured() == ("A", "B")
     sn.save_network(net, START, END)
     assert sn.load_configured() == ()
+
+
+def test_rule_fingerprint_is_stable_across_dict_ordering(monkeypatch):
+    base = sn.rule_fingerprint()
+    assert len(base) == 64 and base == sn.rule_fingerprint()
+    reordered = {
+        k: dict(reversed(list(v.items()))) for k, v in sn.SCORECARD_VARIABLES.items()
+    }
+    monkeypatch.setattr(sn, "SCORECARD_VARIABLES", dict(reversed(list(reordered.items()))))
+    assert sn.rule_fingerprint() == base
+
+
+def test_rule_fingerprint_follows_every_deciding_input(monkeypatch):
+    base = sn.rule_fingerprint()
+    changed = {k: dict(v) for k, v in sn.SCORECARD_VARIABLES.items()}
+    changed["precipitation_24h"]["completeness"] = 0.6
+    monkeypatch.setattr(sn, "SCORECARD_VARIABLES", changed)
+    assert sn.rule_fingerprint() != base
+    monkeypatch.undo()
+    monkeypatch.setattr(sn, "SCORECARD_FIXED_PRECIP_COMPLETENESS", 0.9)
+    assert sn.rule_fingerprint() != base
+    monkeypatch.undo()
+    monkeypatch.setattr(sn, "SCORECARD_STATIONS", ("X",))
+    assert sn.rule_fingerprint() != base
+
+
+def test_save_network_records_the_rule_hash(monkeypatch, tmp_path):
+    monkeypatch.setattr(sn, "SCORES_DIR", str(tmp_path))
+    assert sn.load_rule_hash() is None
+    net = _stations(1).drop(columns="country").assign(
+        ok_temperature=True, ok_precip=True, ok_wind=True
+    )
+    sn.save_network(net, START, END)
+    assert sn.load_rule_hash() == sn.rule_fingerprint()
+    # a sidecar written before the key existed has none
+    wpath = sn._window_path()
+    old = json.loads(wpath.read_text())
+    old.pop("rule_hash")
+    wpath.write_text(json.dumps(old))
+    assert sn.load_rule_hash() is None

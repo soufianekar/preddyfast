@@ -75,6 +75,7 @@ class Env:
         self.leads = (0.0, 6.0, 12.0)
         self.late = {}  # station -> its own last report time
         self.configured = ()
+        self.rule_hash = station_network.rule_fingerprint()
         monkeypatch.setattr(scorecard, "SCORECARD_STATIONS", ())  # general mode
         monkeypatch.setattr(scores_db, "SCORECARD_DIR", str(tmp_path / "scorecard"))
         monkeypatch.setattr(scorecard, "PRECOMPUTE_DIR", str(tmp_path / "precomputed"))
@@ -86,6 +87,7 @@ class Env:
         monkeypatch.setattr(station_network, "select_network", self.select_network)
         monkeypatch.setattr(station_network, "save_network", self.save_network)
         monkeypatch.setattr(station_network, "load_configured", lambda: self.configured)
+        monkeypatch.setattr(station_network, "load_rule_hash", lambda: self.rule_hash)
         monkeypatch.setattr(station_network, "network_obs", self.network_obs)
 
     def station_cube(self, store, variable, init, stations, accum, budget_mb=None, window_end_hour=None):
@@ -101,6 +103,7 @@ class Env:
     def save_network(self, net, start, end, configured=()):
         self.saved = (net, pd.Timestamp(start), pd.Timestamp(end))
         self.configured = tuple(sorted(configured))
+        self.rule_hash = station_network.rule_fingerprint()
 
     def network_obs(self, ids, start, end):
         self.obs_calls += 1
@@ -518,3 +521,38 @@ def test_aggregates_read_old_files_without_the_new_columns(env, monkeypatch):
           "crps", "spread2", "wet_fc", "wet_obs", "brier"]].to_parquet(path)
     scorecard.write_aggregates(TODAY)  # a v1 file must not break the aggregation
     assert "crps_pert" in scorecard._AGG_PAIR_COLUMNS
+
+
+def test_changed_selection_rule_reselects_once(env, caplog):
+    scorecard.refresh(("gfs",), VARS, TODAY)
+    assert env.selected == 1
+    scorecard.refresh(("gfs",), VARS, TODAY, max_minutes=0)
+    assert env.selected == 1  # unchanged rule: the frozen network stands
+    env.rule_hash = "old-rule"
+    with caplog.at_level(logging.INFO, logger=scorecard.logger.name):
+        scorecard.refresh(("gfs",), VARS, TODAY, max_minutes=0)
+    assert env.selected == 2
+    assert "selection rule changed" in caplog.text
+    scorecard.refresh(("gfs",), VARS, TODAY, max_minutes=0)
+    assert env.selected == 2
+
+
+def test_legacy_sidecar_without_rule_hash_reselects_once(env):
+    scorecard.refresh(("gfs",), VARS, TODAY)
+    env.rule_hash = None
+    scorecard.refresh(("gfs",), VARS, TODAY, max_minutes=0)
+    assert env.selected == 2
+    scorecard.refresh(("gfs",), VARS, TODAY, max_minutes=0)
+    assert env.selected == 2
+
+
+def test_precip_only_rule_change_rereads_no_temperature_cube(env):
+    both = ("temperature_2m", "precipitation_24h")
+    scorecard.refresh(("gfs",), both, TODAY)
+    env.calls.clear()
+    env.rule_hash = "old-rule"
+    env.net = _network(("A", "B")).assign(ok_precip=[True, False])
+    scorecard.refresh(("gfs",), both, TODAY)
+    assert env.selected == 2
+    assert {c[1] for c in env.calls} <= {"precipitation_surface"}
+    assert not any(c[1] == "temperature_2m" for c in env.calls)
