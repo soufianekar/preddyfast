@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from utils.climatology import SEASONS, accumulate, calendar_date
 from utils.regions import format_box, format_point
@@ -23,6 +24,9 @@ from utils.settings import (
     NATURAL_EARTH_FILE,
     OBSERVED_COLOR,
     SCORE_DIRECTION,
+    SCORECARD_BOOTSTRAP,
+    SCORECARD_INIT_HOUR,
+    SCORECARD_LEAD_GROUPS,
     SCORECARD_LEAD_STEP_HOURS,
     SCORECARD_MIN_INITS,
     SCORECARD_STORES,
@@ -2045,7 +2049,39 @@ _SCORECARD_SCORES: dict[str, tuple[str, bool]] = {
     "frequency_bias": ("Frequency bias (1 = unbiased)", False),
     "pod": ("POD (hit rate)", False),
     "far": ("FAR (false alarm ratio)", False),
+    "error_sd": ("Error SD", True),
+    "spread_error": ("Spread / error SD (1 = well dispersed)", False),
+    "rmse_ss_persist": ("MSE skill vs persistence", False),
+    "crpss_persist": ("CRPS skill vs persistence", False),
 }
+# Per-threshold scores `{base}_{t}` (scorecard.threshold_key): label of the base.
+_THRESHOLD_SCORE_LABELS: dict[str, str] = {
+    "ets": "ETS",
+    "fbi": "Frequency bias",
+    "pod": "POD (hit rate)",
+    "far": "FAR (false alarm ratio)",
+    "brier": "Fair Brier score",
+    "roc_area": "ROC area",
+}
+# Footer words of each display mode (`SCORECARD_MODES`); never printed for a
+# mode the rows did not apply (`mode_applied` False).
+SCORECARD_MODE_TEXT: dict[str, str] = {
+    "raw": "raw",
+    "height_corrected": (
+        "height-corrected with ERA5 orography (a proxy for each model's own), "
+        "0.0065 K/m"
+    ),
+    "representativeness": (
+        "accounting for representativeness (ECMWF TM865 perturbed ensemble, "
+        "ΔA = native grid spacing)"
+    ),
+}
+_MODE_SHORT: dict[str, str] = {
+    "height_corrected": "height-corrected",
+    "representativeness": "representativeness",
+}
+_PERSISTENCE_SCORES = ("rmse_ss_persist", "crpss_persist")
+_RANK_CAPTION = "U-shape = under-dispersive, ∩ = over-dispersive, slope = bias"
 # Cells with too few pairs: a cross, neutral enough to read on any cell colour.
 _NEUTRAL_MARK = "rgba(128, 128, 128, 0.95)"
 _SCORECARD_DETERMINISTIC_SKIP = ("spread_skill", "brier")
@@ -2063,12 +2099,102 @@ _SPREAD_SKILL_NOTE = (
 _FEW_RUNS_NOTE = (
     "long leads rest on fewer runs: the window ends at the last observation"
 )
+_ERROR_SD_NOTE = "error SD = √(MSE − bias²) of the ensemble mean"
+_SPREAD_ERROR_NOTE = (
+    "spread / error SD = √((M+1)/M · mean variance) / error SD of the ensemble "
+    "mean, ideal 1"
+)
+_PERSISTENCE_NOTE = (
+    "skill vs persistence (the observation 24·⌈lead/24⌉ h before): 1 − MSE / MSE "
+    "of persistence, CRPS against persistence's MAE; pairs with a persistence "
+    "observation only"
+)
+_ROC_AREA_NOTE = (
+    "ROC area from the members' event probabilities (trapezoid), 0.5 = no skill"
+)
 
 
 def _score_text(score: str, variable: str) -> tuple[str, str]:
-    """(label, unit text) of a scorecard score for one variable ("" if unitless)."""
-    label, with_unit = _SCORECARD_SCORES[score]
-    return label, (SCORECARD_VARIABLES[variable]["unit"] if with_unit else "")
+    """(label, unit text) of a scorecard score for one variable ("" if unitless).
+
+    A per-threshold score `{base}_{t}` names its threshold in the variable's
+    unit, e.g. "Fair Brier score (≥ 5 mm)"; the score itself is unitless.
+    """
+    unit = SCORECARD_VARIABLES[variable]["unit"]
+    if score in _SCORECARD_SCORES:
+        label, with_unit = _SCORECARD_SCORES[score]
+        return label, (unit if with_unit else "")
+    base, _, threshold = score.rpartition("_")
+    if base not in _THRESHOLD_SCORE_LABELS:
+        raise KeyError(score)
+    return f"{_THRESHOLD_SCORE_LABELS[base]} (≥ {threshold} {unit})", ""
+
+
+def _rows_applied(rows: pd.DataFrame) -> bool:
+    """Whether every row applied its display mode (old files: no column = raw)."""
+    if "mode_applied" not in rows or rows.empty:
+        return True
+    return bool(rows["mode_applied"].astype(bool).all())
+
+
+def _mode_note(
+    variable: str,
+    scores: list[tuple[str, str]],
+    mode: str,
+    applied: bool,
+    context: dict,
+) -> str:
+    """The footer line naming the display mode, and what in it stays raw.
+
+    Parameters
+    ----------
+    variable : str
+        `SCORECARD_VARIABLES` key.
+    scores : list of (str, str)
+        (score key, label) of what the figure shows.
+    mode : str
+        One of `SCORECARD_MODES`.
+    applied : bool
+        The rows' `mode_applied`. False: the variable has no such mode and the
+        raw columns stood in, so the line says "raw", never the mode.
+    context : dict
+        Optional `mode_raw_scores` (aggregates metadata; default
+        `scorecard.MODE_RAW_SCORES`) and `height_corrected_excluded`.
+    """
+    if mode == "raw":
+        return "Mode: raw"
+    spec = SCORECARD_VARIABLES[variable]
+    names = " and ".join(label for _, label in scores)
+    if not applied:
+        return (
+            f"Mode: raw · {names} shown raw in this mode: {spec['label']} has no "
+            f"{_MODE_SHORT[mode]} version"
+        )
+    raw_scores = (context.get("mode_raw_scores") or {}).get(mode)
+    if raw_scores is None:
+        # Lazy: scorecard pulls in scores/xarray/earthmover, which figures must not.
+        from utils.scorecard import MODE_RAW_SCORES
+
+        raw_scores = MODE_RAW_SCORES[mode]
+    parts = [f"Mode: {SCORECARD_MODE_TEXT[mode]}"]
+    parts += [
+        f"{label} shown raw in this mode" for s, label in scores if s in raw_scores
+    ]
+    keys = {s for s, _ in scores}
+    if mode == "representativeness" and keys & set(_PERSISTENCE_SCORES):
+        parts.append("persistence is not perturbed")
+    if variable == "temperature_2m":
+        if mode == "representativeness":
+            parts.append("temperature centred on the height-corrected value")
+        elif keys & {"spread_error", "spread"}:
+            parts.append("spread unchanged by the height correction")
+        excluded = context.get("height_corrected_excluded")
+        if excluded:
+            parts.append(
+                f"{excluded} station{'s' if excluded != 1 else ''} without "
+                "elevation or orography excluded"
+            )
+    return " · ".join(parts)
 
 
 def _is_deterministic(store: str) -> bool:
@@ -2076,7 +2202,15 @@ def _is_deterministic(store: str) -> bool:
 
 
 def _scorecard_frame_text(
-    variable: str, score: str, stores: list[str], context: dict, relative: bool = False
+    variable: str,
+    score: str,
+    stores: list[str],
+    context: dict,
+    relative: bool = False,
+    mode: str = "raw",
+    applied: bool = True,
+    label: str | None = None,
+    extra: tuple[str, ...] = (),
 ) -> tuple[str, list[str]]:
     """Context line and footer lines shared by every scorecard figure.
 
@@ -2092,12 +2226,32 @@ def _scorecard_frame_text(
         `absent_note` (a last footer line naming models left out of the card).
     relative : bool
         The colour is a percent change against `context["baseline"]`.
+    mode, applied : str, bool
+        Display mode and the rows' `mode_applied`; see `_mode_note`.
+    label : str, optional
+        What the mode line calls the score (default: its `_score_text` label).
+    extra : tuple of str
+        Further footer lines (a diagnostic's caption), after the notes.
+
+    Notes
+    -----
+    The context keys `n_stations`, `period_days` and `end` are optional for
+    the diagnostic figures; the context line names only what it is given.
     """
     spec = SCORECARD_VARIABLES[variable]
-    context_line = (
-        f"{context['n_stations']} stations · last {context['period_days']} days to "
-        f"{pd.Timestamp(context['end']):%Y-%m-%d} · {context['init_hour']:02d} UTC runs"
-    )
+    init_hour = context.get("init_hour", SCORECARD_INIT_HOUR)
+    where = []
+    if context.get("n_stations"):
+        where.append(f"{context['n_stations']} stations")
+    if context.get("period_days"):
+        to = (
+            f" to {pd.Timestamp(context['end']):%Y-%m-%d}"
+            if context.get("end") is not None
+            else ""
+        )
+        where.append(f"last {context['period_days']} days{to}")
+    where.append(f"{init_hour:02d} UTC runs")
+    context_line = " · ".join(where)
     if spec["reference"] == "control_t0":
         match = (
             "Verified against a pseudo-analysis: IFS control T+0, favours IFS and "
@@ -2106,9 +2260,10 @@ def _scorecard_frame_text(
         sampling = _FEW_RUNS_NOTE[0].upper() + _FEW_RUNS_NOTE[1:]
     else:
         if spec["window_hours"] and not spec.get("hourly_fallback", True):
+            end = spec["window_end_hour"]
             match = context.get("tolerance") or (
-                f"Observations: GHCNh station-reported {spec['window_hours']} h "
-                f"totals ending {spec['window_end_hour']:02d} UTC — never hourly sums"
+                f"Observations: GHCNh {spec['window_hours']} h totals "
+                f"{end:02d}–{end:02d} UTC reported by the station — never hourly sums"
             )
         elif spec["window_hours"]:
             match = context.get("tolerance") or (
@@ -2124,20 +2279,26 @@ def _scorecard_frame_text(
         hours = "/".join(
             f"{h:02d}"
             for h in range(
-                context["init_hour"] % SCORECARD_LEAD_STEP_HOURS,
+                init_hour % SCORECARD_LEAD_STEP_HOURS,
                 24,
                 SCORECARD_LEAD_STEP_HOURS,
             )
         )
         sampling = f"Every model scored at {hours} UTC valid times · {_FEW_RUNS_NOTE}"
+    corrected = applied and mode != "raw" and variable == "temperature_2m"
     lines = [
         f"{match} · {_FORECAST_SOURCE}",
         (
-            "Model values: nearest grid cell, no height correction; coastal cells "
-            "may be partly sea · common inits: every model scored on the same runs"
+            "Model values: nearest grid cell"
+            + ("" if corrected else ", no height correction")
+            + "; coastal cells may be partly sea · common inits: every model "
+            "scored on the same runs"
         ),
         sampling,
     ]
+    if label is None:
+        label = _score_text(score, variable)[0]
+    lines.append(_mode_note(variable, [(score, label)], mode, applied, context))
     notes = []
     if score == "crps":
         notes.append("fair CRPS (ensembles scored on their own members)")
@@ -2149,6 +2310,18 @@ def _scorecard_frame_text(
         notes.append(_BIAS_CORRECTED_NOTE)
     elif score == "spread_skill":
         notes.append(_SPREAD_SKILL_NOTE)
+    elif score == "error_sd":
+        notes.append(_ERROR_SD_NOTE)
+    elif score == "spread_error":
+        notes.append(_SPREAD_ERROR_NOTE)
+    elif score in _PERSISTENCE_SCORES:
+        notes.append(_PERSISTENCE_NOTE)
+    elif score.startswith("brier_"):
+        notes.append(
+            f"fair Brier score at ≥ {score.removeprefix('brier_')} {spec['unit']}"
+        )
+    elif score.startswith("roc_area_"):
+        notes.append(_ROC_AREA_NOTE)
     if relative:
         base = GRID_STORES[context["baseline"]]["label"]
         notes.append(
@@ -2157,6 +2330,7 @@ def _scorecard_frame_text(
         )
     if notes:
         lines.append(" · ".join(notes)[0].upper() + " · ".join(notes)[1:])
+    lines += list(extra)
     if context.get("absent_note"):
         lines.append(context["absent_note"])
     return context_line, lines
@@ -2178,8 +2352,69 @@ def _score_scale(score: str, values: np.ndarray) -> dict:
     return {"colorscale": "YlGnBu_r" if direction == "lower" else "YlGnBu"}
 
 
+def _significance_cells(
+    sig: pd.DataFrame | None,
+    stored: pd.DataFrame | None,
+    score: str,
+    unit: str,
+    stores: list[str],
+    baseline: str,
+    grid,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """(sig grid, hover text grid) of the paired test, or (None, None) without one.
+
+    `sig` (columns `diff, lo, hi, sig`) wins over the stored `lead_relative`
+    columns `diff_/lo_/hi_/sig_{score}`. NaN `sig` is "not assessed" (too few
+    common runs), never "not significant".
+    """
+    if sig is not None:
+        if "variable" in sig and stored is not None and "variable" in stored:
+            sig = sig[sig["variable"].isin(set(stored["variable"]))]
+        frame = sig.rename(
+            columns={c: f"{c}_{score}" for c in ("diff", "lo", "hi", "sig")}
+        )
+    elif stored is not None and f"sig_{score}" in stored:
+        frame = stored
+    else:
+        return None, None
+    if frame.empty:
+        return None, None
+    flag, diff, lo, hi = (
+        grid(frame, f"{c}_{score}") for c in ("sig", "diff", "lo", "hi")
+    )
+    level = f"{SCORECARD_BOOTSTRAP['level'] * 100:g} %"
+    suffix = f" {unit}" if unit else ""
+    text = np.full(flag.shape, "", dtype=object)
+    for r, store in enumerate(stores):
+        for c in range(flag.shape[1]):
+            if store == baseline:
+                text[r, c] = "baseline of the significance test"
+                continue
+            if not np.isfinite(flag[r, c]):
+                text[r, c] = (
+                    "significance not assessed (fewer than "
+                    f"{SCORECARD_MIN_INITS} common runs)"
+                    if np.isfinite(diff[r, c])
+                    else "significance not assessed"
+                )
+                continue
+            verdict = "significant" if flag[r, c] == 1.0 else "not significant"
+            text[r, c] = (
+                f"{verdict} at {level}: difference {diff[r, c]:+.3g} "
+                f"[{lo[r, c]:+.3g}, {hi[r, c]:+.3g}]{suffix}, over the pairs both "
+                "models share (may differ from the % shown)"
+            )
+    return flag, text.astype(str)
+
+
 def make_scorecard_fig(
-    table: pd.DataFrame, variable: str, score: str, relative: bool, context: dict
+    table: pd.DataFrame,
+    variable: str,
+    score: str,
+    relative: bool,
+    context: dict,
+    mode: str = "raw",
+    sig: pd.DataFrame | None = None,
 ) -> go.Figure:
     """Models × lead days heatmap of one score.
 
@@ -2197,7 +2432,15 @@ def make_scorecard_fig(
     context : dict
         See `_scorecard_frame_text`. Optional `relative_rows`: stored
         `lead_relative` rows (same keys as `table`) used for the percent colour
-        instead of recomputing it from `table`.
+        instead of recomputing it from `table`; their `diff_/lo_/hi_/sig_{score}`
+        columns are the significance when `sig` is not given.
+    mode : str
+        One of `SCORECARD_MODES`. Rows with a `mode` column are cut to it; the
+        footer names the mode, or says the score is shown raw where it was.
+    sig : pandas.DataFrame, optional
+        `scorecard.significance` output (`store`, `lead_day`, `diff`, `lo`,
+        `hi`, `sig`). Relative view only: a dot where `sig` is 1, none where
+        0, "not assessed" in the hover where NaN.
 
     Notes
     -----
@@ -2208,8 +2451,11 @@ def make_scorecard_fig(
     from utils.scorecard import relative_to
 
     table = table[table["variable"] == variable]
+    if "mode" in table:
+        table = table[table["mode"] == mode]
     if table.empty:
         return make_empty_fig("No data available")
+    applied = _rows_applied(table)
     stores = [s for s in SCORECARD_STORES if s in set(table["store"])]
     days = list(range(1, 16))
     label, unit = _score_text(score, variable)
@@ -2224,6 +2470,8 @@ def make_scorecard_fig(
     stored = context.get("relative_rows")
     if stored is not None:
         stored = stored[stored["variable"] == variable]
+        if "mode" in stored:
+            stored = stored[stored["mode"] == mode]
     pct_table = (
         stored if stored is not None else relative_to(table, context["baseline"])
     )
@@ -2246,6 +2494,13 @@ def make_scorecard_fig(
         f" (n<{min_n})",
         np.where(low & few_runs, f" (<{SCORECARD_MIN_INITS} runs)", ""),
     )
+    labels = [GRID_STORES[s]["label"] for s in stores]
+    base_label = GRID_STORES[context["baseline"]]["label"]
+    sig_grid, sig_text = (
+        _significance_cells(sig, stored, score, unit, stores, context["baseline"], grid)
+        if relative
+        else (None, None)
+    )
     custom = np.stack(
         [
             fmt(absolute, ".3g", f" {unit}" if unit else ""),
@@ -2253,11 +2508,10 @@ def make_scorecard_fig(
             fmt(n, ".0f"),
             fmt(n_inits, ".0f"),
             flag,
+            sig_text if sig_text is not None else np.full(absolute.shape, ""),
         ],
         axis=-1,
     )
-    labels = [GRID_STORES[s]["label"] for s in stores]
-    base_label = GRID_STORES[context["baseline"]]["label"]
     if relative:
         labels = [
             f"{lab} (baseline)" if s == context["baseline"] else lab
@@ -2311,7 +2565,8 @@ def make_scorecard_fig(
                 f"{label}: %{{customdata[0]}}<br>"
                 f"vs {base_label}: %{{customdata[1]}}<br>"
                 "n=%{customdata[2]} pairs, %{customdata[3]} inits%{customdata[4]}"
-                "<extra></extra>"
+                + ("<br>%{customdata[5]}" if sig_text is not None else "")
+                + "<extra></extra>"
             ),
             **scale,
         )
@@ -2330,6 +2585,24 @@ def make_scorecard_fig(
                     "line": {"width": 1},
                 },
                 name="n below minimum",
+                hoverinfo="skip",
+            )
+        )
+    sig_line: tuple[str, ...] = ()
+    if sig_grid is not None:
+        level = f"{SCORECARD_BOOTSTRAP['level'] * 100:g} %"
+        sig_line = (
+            f"• significant at {level} (moving-block bootstrap over runs, paired "
+            f"against {base_label})",
+        )
+        rows, cols = np.nonzero((sig_grid == 1.0) & np.isfinite(z))
+        fig.add_trace(
+            go.Scatter(
+                x=[days[c] for c in cols],
+                y=[labels[r] for r in rows],
+                mode="markers",
+                marker={"symbol": "circle", "size": 7, "color": _NEUTRAL_MARK},
+                name=f"significant at {level}",
                 hoverinfo="skip",
             )
         )
@@ -2362,7 +2635,9 @@ def make_scorecard_fig(
         },
         yaxis={"autorange": "reversed"},
     )
-    head, foot = _scorecard_frame_text(variable, score, stores, context, relative)
+    head, foot = _scorecard_frame_text(
+        variable, score, stores, context, relative, mode, applied, extra=sig_line
+    )
     _frame_timeseries(
         fig,
         f"{SCORECARD_VARIABLES[variable]['label']} — {label}",
@@ -2375,15 +2650,18 @@ def make_scorecard_fig(
 
 
 def make_score_lead_fig(
-    df: pd.DataFrame, variable: str, score: str, context: dict
+    df: pd.DataFrame, variable: str, score: str, context: dict, mode: str = "raw"
 ) -> go.Figure:
     """One score against lead day, one line per model (never pooled).
 
     Deterministic models are skipped for spread/skill and Brier (one member). A
     dashed line marks the ideal value of spread/skill (1), frequency bias (1)
-    and bias (0).
+    and bias (0). Rows with a `mode` column are cut to `mode`, which the
+    footer names.
     """
     df = df[df["variable"] == variable]
+    if "mode" in df:
+        df = df[df["mode"] == mode]
     if df.empty:
         return make_empty_fig("No data available")
     label, unit = _score_text(score, variable)
@@ -2429,7 +2707,9 @@ def make_score_lead_fig(
         xaxis={"title": "Lead day (day 1 = 0–24 h)", "dtick": 1},
         yaxis_title=f"{label}{f' ({unit})' if unit else ''}",
     )
-    head, foot = _scorecard_frame_text(variable, score, stores, context)
+    head, foot = _scorecard_frame_text(
+        variable, score, stores, context, mode=mode, applied=_rows_applied(df)
+    )
     _frame_timeseries(
         fig,
         f"{SCORECARD_VARIABLES[variable]['label']} — {label}",
@@ -2442,7 +2722,7 @@ def make_score_lead_fig(
 
 
 def make_station_score_map(
-    df: pd.DataFrame, variable: str, score: str, context: dict
+    df: pd.DataFrame, variable: str, score: str, context: dict, mode: str = "raw"
 ) -> go.Figure:
     """One dot per station coloured by one score, on the bundled coastlines.
 
@@ -2453,8 +2733,12 @@ def make_station_score_map(
         filtered to that lead, joined with `lat`, `lon` and optionally `name`.
         The caller chooses the lead and the model; both go in `context["lead"]`
         (text, e.g. "day 3, ECMWF IFS ENS") and appear in the title.
+    mode : str
+        One of `SCORECARD_MODES`; rows with a `mode` column are cut to it.
     """
     df = df[df["variable"] == variable].dropna(subset=["lat", "lon"])
+    if "mode" in df:
+        df = df[df["mode"] == mode]
     if df.empty:
         return make_empty_fig("No data available")
     label, unit = _score_text(score, variable)
@@ -2534,7 +2818,9 @@ def make_station_score_map(
     fig.update_yaxes(
         range=[lat_min, lat_max], scaleanchor="x", scaleratio=aspect, constrain="domain"
     )
-    head, foot = _scorecard_frame_text(variable, score, stores, context)
+    head, foot = _scorecard_frame_text(
+        variable, score, stores, context, mode=mode, applied=_rows_applied(df)
+    )
     lead = f" · {context['lead']}" if context.get("lead") else ""
     _frame_timeseries(
         fig,
@@ -2543,5 +2829,713 @@ def make_station_score_map(
         foot,
         height=620,
         x_kind="linear",
+    )
+    return fig
+
+
+# --------------------------------------------------------------------------
+# Scorecard diagnostics: spread-error, diurnal, rank, reliability, ROC
+# --------------------------------------------------------------------------
+_DIAG_HEIGHT = 560
+
+
+def _diag_rows(
+    table: pd.DataFrame, kind: str, variable: str, mode: str
+) -> pd.DataFrame:
+    """Aggregates rows of one kind, variable and display mode (columns optional)."""
+    if table is None or table.empty:
+        return pd.DataFrame()
+    rows = table
+    if "kind" in rows:
+        rows = rows[rows["kind"] == kind]
+    rows = rows[rows["variable"] == variable]
+    if "mode" in rows:
+        rows = rows[rows["mode"] == mode]
+    return rows
+
+
+def _diag_stores(rows: pd.DataFrame) -> list[str]:
+    present = set(rows["store"])
+    return [s for s in SCORECARD_STORES if s in present]
+
+
+def _group_label(group: str) -> str:
+    """'1-3' -> 'lead days 1–3'."""
+    a, _, b = str(group).partition("-")
+    return f"lead days {a}–{b}" if b else f"lead day {a}"
+
+
+def _group_order(groups) -> list[str]:
+    known = [f"{a}-{b}" for a, b in SCORECARD_LEAD_GROUPS]
+    present = {str(g) for g in groups}
+    return [g for g in known if g in present] + sorted(present - set(known))
+
+
+def _room_for_panel_titles(fig: go.Figure, frac: float = 0.08) -> None:
+    """Lower every y domain so the top row's panel titles clear the subtitle."""
+    for axis in fig.select_yaxes():
+        lo, hi = axis.domain
+        axis.domain = [lo * (1 - frac), hi * (1 - frac)]
+    for note in fig.layout.annotations:
+        note.y = note.y * (1 - frac)
+
+
+def _diag_layout(fig: go.Figure, **layout) -> None:
+    fig.update_layout(
+        **{
+            k: v
+            for k, v in _LAYOUT_DEFAULTS.items()
+            if k not in ("hovermode", "legend", "margin")
+        },
+        hovermode="closest",
+        **layout,
+    )
+
+
+def _diag_frame(
+    fig: go.Figure,
+    title: str,
+    variable: str,
+    score: str,
+    stores: list[str],
+    context: dict | None,
+    mode: str,
+    applied: bool,
+    label: str,
+    extra: tuple[str, ...] = (),
+    height: int = _DIAG_HEIGHT,
+) -> None:
+    head, foot = _scorecard_frame_text(
+        variable,
+        score,
+        stores,
+        context or {},
+        mode=mode,
+        applied=applied,
+        label=label,
+        extra=extra,
+    )
+    _frame_timeseries(
+        fig,
+        f"{SCORECARD_VARIABLES[variable]['label']} — {title}",
+        head,
+        foot,
+        height=height,
+        x_kind="linear",
+    )
+
+
+def _period_context(rows: pd.DataFrame, context: dict | None) -> dict:
+    """The caller's context, with `period_days` from the rows when not given."""
+    context = dict(context or {})
+    if "period_days" not in context and "period_days" in rows and len(rows):
+        context["period_days"] = int(rows["period_days"].iloc[0])
+    return context
+
+
+def make_spread_error_fig(
+    table: pd.DataFrame,
+    variable: str,
+    mode: str = "raw",
+    *,
+    context: dict | None = None,
+) -> go.Figure:
+    """Error SD (solid) and spread (dashed) by lead day, per model; ratio below.
+
+    Parameters
+    ----------
+    table : pandas.DataFrame
+        Aggregates rows of kind `lead` (other kinds, variables and modes are
+        ignored) with `error_sd`, `spread_error`, `n`, `n_inits`.
+    variable : str
+        `SCORECARD_VARIABLES` key.
+    mode : str
+        One of `SCORECARD_MODES`.
+    context : dict, optional
+        As `_scorecard_frame_text`; every key optional here.
+
+    Notes
+    -----
+    Spread is `spread_error · error_sd`, i.e. √((M+1)/M · mean variance). A
+    model without spread (a deterministic one in raw mode) draws its error SD
+    only. The ratio sits on its own panel, never on a second y-scale.
+    """
+    rows = _diag_rows(table, "lead", variable, mode)
+    if rows.empty or not np.isfinite(rows["error_sd"].to_numpy(dtype=float)).any():
+        return make_empty_fig("No data available")
+    unit = SCORECARD_VARIABLES[variable]["unit"]
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        row_heights=[0.68, 0.32],
+        vertical_spacing=0.07,
+    )
+    stores = []
+    for store in _diag_stores(rows):
+        sub = rows[rows["store"] == store].sort_values("lead_day")
+        err = sub["error_sd"].to_numpy(dtype=float)
+        if not np.isfinite(err).any():
+            continue
+        stores.append(store)
+        color = _store_color(store)
+        name = GRID_STORES[store]["label"]
+        counts = np.stack([sub["n"], sub["n_inits"]], axis=-1)
+        fig.add_trace(
+            go.Scatter(
+                x=sub["lead_day"],
+                y=err,
+                mode="lines+markers",
+                line={"color": color, "width": 2},
+                marker={"color": color, "size": 5},
+                name=name,
+                legendgroup=store,
+                meta=(store, "error_sd"),
+                customdata=counts,
+                hovertemplate=(
+                    f"{name}<br>Lead day %{{x}}<br>error SD %{{y:.3g}} {unit}<br>"
+                    "n=%{customdata[0]} pairs, %{customdata[1]} inits<extra></extra>"
+                ),
+            ),
+            row=1,
+            col=1,
+        )
+        ratio = sub["spread_error"].to_numpy(dtype=float)
+        if not np.isfinite(ratio).any():
+            continue
+        spread = ratio * err
+        fig.add_trace(
+            go.Scatter(
+                x=sub["lead_day"],
+                y=spread,
+                mode="lines",
+                line={"color": color, "width": 2, "dash": "dash"},
+                name=f"{name} spread",
+                legendgroup=store,
+                showlegend=False,
+                meta=(store, "spread"),
+                customdata=counts,
+                hovertemplate=(
+                    f"{name}<br>Lead day %{{x}}<br>spread %{{y:.3g}} {unit}<br>"
+                    "n=%{customdata[0]} pairs, %{customdata[1]} inits<extra></extra>"
+                ),
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=sub["lead_day"],
+                y=ratio,
+                mode="lines+markers",
+                line={"color": color, "width": 2},
+                marker={"color": color, "size": 4},
+                name=f"{name} spread / error SD",
+                legendgroup=store,
+                showlegend=False,
+                meta=(store, "ratio"),
+                customdata=np.stack([spread, err], axis=-1),
+                hovertemplate=(
+                    f"{name}<br>Lead day %{{x}}<br>spread / error SD %{{y:.2f}}<br>"
+                    f"spread %{{customdata[0]:.3g}} {unit}, error SD "
+                    f"%{{customdata[1]:.3g}} {unit}<extra></extra>"
+                ),
+            ),
+            row=2,
+            col=1,
+        )
+    # Line-style key in neutral ink: the store legend entries carry colour.
+    for dash, what in ((None, "solid: error SD"), ("dash", "dashed: spread")):
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="lines",
+                line={"color": _NEUTRAL_MARK, "width": 2, "dash": dash},
+                name=what,
+                hoverinfo="skip",
+            ),
+            row=1,
+            col=1,
+        )
+    fig.add_hline(
+        y=1, line={"color": _NEUTRAL_MARK, "width": 1, "dash": "dash"}, row=2, col=1
+    )
+    _diag_layout(fig)
+    fig.update_xaxes(dtick=1)
+    fig.update_xaxes(title_text="Lead day (day 1 = 0–24 h)", row=2, col=1)
+    fig.update_yaxes(title_text=f"Error SD, spread ({unit})", row=1, col=1)
+    fig.update_yaxes(title_text="Spread / error SD", row=2, col=1)
+    _diag_frame(
+        fig,
+        "spread and error SD",
+        variable,
+        "spread_error",
+        stores,
+        _period_context(rows, context),
+        mode,
+        _rows_applied(rows),
+        "Spread / error SD",
+        extra=(_ERROR_SD_NOTE[0].upper() + _ERROR_SD_NOTE[1:],),
+    )
+    return fig
+
+
+def make_diurnal_fig(
+    table: pd.DataFrame,
+    variable: str,
+    score: str = "bias",
+    mode: str = "raw",
+    *,
+    context: dict | None = None,
+) -> go.Figure:
+    """One score by valid hour, one line per model, one panel per lead-day group.
+
+    Parameters
+    ----------
+    table : pandas.DataFrame
+        Aggregates rows of kind `diurnal`: `lead_group`, `valid_hour`, `bias`,
+        `rmse`, `error_sd`, `n`, `n_inits`, `low_n`.
+    variable : str
+        `SCORECARD_VARIABLES` key.
+    score : str
+        "bias", "rmse" or "error_sd".
+    mode : str
+        One of `SCORECARD_MODES`.
+    context : dict, optional
+        As `make_spread_error_fig`; `min_n` (default 50) for the low-n flag.
+    """
+    rows = _diag_rows(table, "diurnal", variable, mode)
+    if rows.empty or not np.isfinite(rows[score].to_numpy(dtype=float)).any():
+        return make_empty_fig("No data available")
+    label, unit = _score_text(score, variable)
+    min_n = (context or {}).get("min_n", 50)
+    groups = _group_order(rows["lead_group"].unique())
+    fig = make_subplots(
+        rows=1,
+        cols=len(groups),
+        shared_yaxes=True,
+        horizontal_spacing=0.04,
+        subplot_titles=[_group_label(g).capitalize() for g in groups],
+    )
+    stores = _diag_stores(rows)
+    for store in stores:
+        color = _store_color(store)
+        name = GRID_STORES[store]["label"]
+        for c, group in enumerate(groups, start=1):
+            sub = rows[(rows["store"] == store) & (rows["lead_group"] == group)]
+            sub = sub.sort_values("valid_hour")
+            if sub.empty:
+                continue
+            low = sub["low_n"].astype(bool) if "low_n" in sub else False
+            flag = np.where(low, f" (n<{min_n})", "")
+            fig.add_trace(
+                go.Scatter(
+                    x=sub["valid_hour"],
+                    y=sub[score],
+                    mode="lines+markers",
+                    line={"color": color, "width": 2},
+                    marker={"color": color, "size": 8},
+                    name=name,
+                    legendgroup=store,
+                    showlegend=c == 1,
+                    customdata=np.stack([sub["n"], sub["n_inits"], flag], axis=-1),
+                    hovertemplate=(
+                        f"{name}<br>{_group_label(group)}, %{{x:02d}} UTC<br>"
+                        f"{label} %{{y:.3g}} {unit}<br>"
+                        "n=%{customdata[0]} pairs, %{customdata[1]} inits"
+                        "%{customdata[2]}<extra></extra>"
+                    ),
+                ),
+                row=1,
+                col=c,
+            )
+    ideal = SCORE_DIRECTION.get(score)
+    for c in range(1, len(groups) + 1):
+        if not isinstance(ideal, str) and ideal is not None:
+            fig.add_hline(
+                y=ideal,
+                line={"color": _NEUTRAL_MARK, "width": 1, "dash": "dash"},
+                row=1,
+                col=c,
+            )
+    _diag_layout(fig)
+    _room_for_panel_titles(fig)
+    fig.update_xaxes(
+        tickvals=[0, 6, 12, 18],
+        ticktext=["00", "06", "12", "18"],
+        range=[-1.5, 19.5],
+        title_text="Valid hour (UTC)",
+    )
+    fig.update_yaxes(title_text=f"{label} ({unit})", row=1, col=1)
+    _diag_frame(
+        fig,
+        f"{label} by valid hour",
+        variable,
+        score,
+        stores,
+        _period_context(rows, context),
+        mode,
+        _rows_applied(rows),
+        label,
+    )
+    return fig
+
+
+def make_rank_histogram_fig(
+    table: pd.DataFrame,
+    variable: str,
+    lead_day: int,
+    mode: str = "raw",
+    *,
+    context: dict | None = None,
+) -> go.Figure:
+    """Rank histogram at one lead day, one panel per model, flat line at 1/bins.
+
+    Parameters
+    ----------
+    table : pandas.DataFrame
+        Aggregates rows of kind `rank`: `lead_day`, `bin` (0..bins−1 of rank /
+        (M + 1)), `count` (fractional), `n`, `freq` (count / n), `n_inits`.
+    variable : str
+        `SCORECARD_VARIABLES` key.
+    lead_day : int
+        One of `scorecard.STATION_LEAD_DAYS`.
+    mode : str
+        One of `SCORECARD_MODES`.
+    context : dict, optional
+        As `make_spread_error_fig`.
+
+    Notes
+    -----
+    Bars are percent of ranks; a well-dispersed ensemble sits on the flat
+    line at 100 / bins %. Each panel is one model; nothing is pooled.
+    """
+    rows = _diag_rows(table, "rank", variable, mode)
+    if not rows.empty:
+        rows = rows[rows["lead_day"] == lead_day]
+    if rows.empty:
+        return make_empty_fig("No data available")
+    stores = _diag_stores(rows)
+    bins = int(rows["bin"].max()) + 1
+    flat = 100.0 / bins
+    cols = min(4, len(stores))
+    nrows = -(-len(stores) // cols)
+    fig = make_subplots(
+        rows=nrows,
+        cols=cols,
+        shared_xaxes="all",
+        shared_yaxes="all",
+        horizontal_spacing=0.04,
+        vertical_spacing=0.16 if nrows > 1 else 0.1,
+        subplot_titles=[GRID_STORES[s]["label"] for s in stores],
+    )
+    for k, store in enumerate(stores):
+        r, c = divmod(k, cols)
+        sub = rows[rows["store"] == store].sort_values("bin")
+        lo = sub["bin"].to_numpy(dtype=float) / bins
+        name = GRID_STORES[store]["label"]
+        fig.add_trace(
+            go.Bar(
+                x=lo + 0.5 / bins,
+                y=100.0 * sub["freq"].to_numpy(dtype=float),
+                width=0.9 / bins,
+                marker={"color": _store_color(store), "line": {"width": 0}},
+                name=name,
+                showlegend=False,
+                customdata=np.stack(
+                    [lo, lo + 1.0 / bins, sub["n"], sub["n_inits"]], axis=-1
+                ),
+                hovertemplate=(
+                    f"{name}<br>rank / (M+1) %{{customdata[0]:.1f}}–"
+                    "%{customdata[1]:.1f}<br>"
+                    f"%{{y:.1f}} % of ranks (flat = {flat:g} %)<br>"
+                    "n=%{customdata[2]:.0f} ranks, %{customdata[3]} inits"
+                    "<extra></extra>"
+                ),
+            ),
+            row=r + 1,
+            col=c + 1,
+        )
+        fig.add_hline(
+            y=flat,
+            line={"color": _NEUTRAL_MARK, "width": 1, "dash": "dash"},
+            row=r + 1,
+            col=c + 1,
+        )
+    _diag_layout(fig, bargap=0)
+    _room_for_panel_titles(fig)
+    top = max(float(np.nanmax(100.0 * rows["freq"].to_numpy(dtype=float))), flat)
+    fig.update_xaxes(range=[0, 1], dtick=0.2)
+    # Explicit: matched axes of empty grid cells otherwise pull autorange to [-1, 4].
+    fig.update_yaxes(range=[0, 1.1 * top])
+    for c in range(1, cols + 1):
+        fig.update_xaxes(title_text="Rank / (M + 1)", row=nrows, col=c)
+    for r in range(1, nrows + 1):
+        fig.update_yaxes(title_text="% of ranks", row=r, col=1)
+    caption = (
+        f"Rank of the observation among the members, {bins} bins, flat line at "
+        f"{flat:g} % · {_RANK_CAPTION}"
+    )
+    extra = [caption]
+    if mode == "raw":
+        extra.append(
+            "Deterministic models have no rank histogram in raw mode (one member)"
+        )
+    _diag_frame(
+        fig,
+        f"rank histogram, lead day {lead_day}",
+        variable,
+        "rank",
+        stores,
+        _period_context(rows, context),
+        mode,
+        _rows_applied(rows),
+        "Rank histogram",
+        extra=tuple(extra),
+        height=260 + 200 * nrows,
+    )
+    return fig
+
+
+def _threshold_rows(
+    table: pd.DataFrame,
+    kind: str,
+    variable: str,
+    threshold: float,
+    lead_group: str,
+    mode: str,
+) -> pd.DataFrame:
+    rows = _diag_rows(table, kind, variable, mode)
+    if rows.empty:
+        return rows
+    hit = np.isclose(rows["threshold"].to_numpy(dtype=float), float(threshold))
+    return rows[hit & (rows["lead_group"].astype(str) == str(lead_group))]
+
+
+def _unit_square(fig: go.Figure, x_title: str, y_title: str) -> None:
+    fig.add_shape(
+        type="line",
+        x0=0,
+        y0=0,
+        x1=1,
+        y1=1,
+        xref="x",
+        yref="y",
+        line={"color": _NEUTRAL_MARK, "width": 1, "dash": "dash"},
+    )
+    fig.update_layout(
+        xaxis={
+            "range": [0, 1],
+            "tickformat": ".0%",
+            "title": {"text": x_title},
+            "constrain": "domain",
+        },
+        yaxis={
+            "range": [0, 1],
+            "tickformat": ".0%",
+            "title": {"text": y_title},
+            "scaleanchor": "x",
+            "scaleratio": 1,
+            "constrain": "domain",
+        },
+    )
+
+
+def make_reliability_fig(
+    table: pd.DataFrame,
+    variable: str,
+    threshold: float,
+    lead_group: str,
+    mode: str = "raw",
+    *,
+    context: dict | None = None,
+) -> go.Figure:
+    """Reliability diagram at one threshold and lead-day group, sharpness inset.
+
+    Parameters
+    ----------
+    table : pandas.DataFrame
+        Aggregates rows of kind `reliability`: `threshold`, `lead_group`,
+        `bin`, `bin_lo`, `bin_hi`, `p_mean`, `obs_freq`, `count`, `n_inits`.
+    variable : str
+        `SCORECARD_VARIABLES` key (one with `thresholds`).
+    threshold : float
+        Event threshold in the variable's unit.
+    lead_group : str
+        "1-3", "4-7" or "8-15" (`SCORECARD_LEAD_GROUPS`).
+    mode : str
+        One of `SCORECARD_MODES`.
+    context : dict, optional
+        As `make_spread_error_fig`.
+
+    Notes
+    -----
+    Point area follows the number of forecasts in the bin (largest bin of
+    the model = largest point). The sharpness panel, beside the square
+    diagram, is each model's share of forecasts per bin on a log scale.
+    """
+    rows = _threshold_rows(table, "reliability", variable, threshold, lead_group, mode)
+    if rows.empty:
+        return make_empty_fig("No data available")
+    unit = SCORECARD_VARIABLES[variable]["unit"]
+    event = f"≥ {float(threshold):g} {unit}"
+    stores = _diag_stores(rows)
+    fig = go.Figure()
+    for store in stores:
+        sub = rows[rows["store"] == store].sort_values("bin")
+        count = sub["count"].to_numpy(dtype=float)
+        color = _store_color(store)
+        name = GRID_STORES[store]["label"]
+        size = 6 + 14 * np.sqrt(count / max(count.max(), 1.0))
+        fig.add_trace(
+            go.Scatter(
+                x=sub["p_mean"],
+                y=sub["obs_freq"],
+                mode="lines+markers",
+                line={"color": color, "width": 2},
+                marker={"color": color, "size": size},
+                name=name,
+                legendgroup=store,
+                meta=(store, "reliability"),
+                customdata=np.stack(
+                    [count, sub["bin_lo"], sub["bin_hi"], sub["n_inits"]], axis=-1
+                ),
+                hovertemplate=(
+                    f"{name}<br>forecast probability %{{customdata[1]:.0%}}–"
+                    "%{customdata[2]:.0%} (mean %{x:.0%})<br>"
+                    f"observed frequency of {event}: %{{y:.0%}}<br>"
+                    "count %{customdata[0]:,.0f} forecasts, %{customdata[3]} inits"
+                    "<extra></extra>"
+                ),
+            )
+        )
+        share = count / max(count.sum(), 1.0)
+        fig.add_trace(
+            go.Scatter(
+                x=(sub["bin_lo"] + sub["bin_hi"]) / 2,
+                y=share,
+                xaxis="x2",
+                yaxis="y2",
+                mode="lines+markers",
+                line={"color": color, "width": 1.5},
+                marker={"color": color, "size": 4},
+                name=f"{name} sharpness",
+                legendgroup=store,
+                showlegend=False,
+                meta=(store, "sharpness"),
+                customdata=np.stack([sub["bin_lo"], sub["bin_hi"]], axis=-1),
+                hovertemplate=(
+                    f"{name}<br>forecast probability %{{customdata[0]:.0%}}–"
+                    "%{customdata[1]:.0%}<br>%{y:.1%} of forecasts<extra></extra>"
+                ),
+            )
+        )
+    _diag_layout(
+        fig,
+        xaxis2={
+            "domain": [0.74, 1.0],
+            "anchor": "y2",
+            "range": [0, 1],
+            "tickformat": ".0%",
+            "dtick": 0.5,
+            "title": {"text": "Forecast probability", "font": {"size": 11}},
+        },
+        yaxis2={
+            "domain": [0.5, 1.0],
+            "anchor": "x2",
+            "type": "log",
+            "title": {"text": "Share of forecasts (sharpness)", "font": {"size": 11}},
+        },
+    )
+    fig.update_layout(xaxis_domain=[0.0, 0.62])
+    _unit_square(
+        fig,
+        f"Forecast probability (share of members {event})",
+        "Observed frequency",
+    )
+    _diag_frame(
+        fig,
+        f"reliability, {event}, {_group_label(lead_group)}",
+        variable,
+        "reliability",
+        stores,
+        _period_context(rows, context),
+        mode,
+        _rows_applied(rows),
+        f"Reliability (≥ {float(threshold):g} {unit})",
+        extra=(
+            "Point size: number of forecasts in the bin · right: sharpness, each "
+            "model's share of forecasts per probability bin (log scale) · "
+            "diagonal = perfectly reliable",
+        ),
+        height=_DIAG_HEIGHT + 80,
+    )
+    return fig
+
+
+def make_roc_fig(
+    table: pd.DataFrame,
+    variable: str,
+    threshold: float,
+    lead_group: str,
+    mode: str = "raw",
+    *,
+    context: dict | None = None,
+) -> go.Figure:
+    """ROC curve per model at one threshold and lead-day group, area in the legend.
+
+    Parameters
+    ----------
+    table : pandas.DataFrame
+        Aggregates rows of kind `roc`: `threshold`, `lead_group`, `j`,
+        `prob_threshold`, `pod`, `pofd`, `area`, `n`.
+    variable, threshold, lead_group, mode, context
+        As `make_reliability_fig`.
+    """
+    rows = _threshold_rows(table, "roc", variable, threshold, lead_group, mode)
+    if rows.empty:
+        return make_empty_fig("No data available")
+    unit = SCORECARD_VARIABLES[variable]["unit"]
+    event = f"≥ {float(threshold):g} {unit}"
+    stores = _diag_stores(rows)
+    fig = go.Figure()
+    for store in stores:
+        sub = rows[rows["store"] == store].sort_values(["pofd", "pod"])
+        color = _store_color(store)
+        label = GRID_STORES[store]["label"]
+        area = float(sub["area"].iloc[0])
+        fig.add_trace(
+            go.Scatter(
+                x=sub["pofd"],
+                y=sub["pod"],
+                mode="lines+markers",
+                line={"color": color, "width": 2},
+                marker={"color": color, "size": 5},
+                name=f"{label} (area {area:.2f})",
+                legendgroup=store,
+                meta=(store, "roc"),
+                customdata=np.stack([sub["prob_threshold"], sub["n"]], axis=-1),
+                hovertemplate=(
+                    f"{label}<br>{event} forecast when p ≥ %{{customdata[0]:.0%}}<br>"
+                    "hit rate (POD) %{y:.0%}<br>false-alarm rate (POFD) %{x:.0%}<br>"
+                    "n=%{customdata[1]} pairs<extra></extra>"
+                ),
+            )
+        )
+    _diag_layout(fig)
+    _unit_square(fig, "False-alarm rate (POFD)", "Hit rate (POD)")
+    _diag_frame(
+        fig,
+        f"ROC, {event}, {_group_label(lead_group)}",
+        variable,
+        f"roc_area_{float(threshold):g}",
+        stores,
+        _period_context(rows, context),
+        mode,
+        _rows_applied(rows),
+        f"ROC (≥ {float(threshold):g} {unit})",
+        extra=("Diagonal = no skill",),
+        height=_DIAG_HEIGHT + 80,
     )
     return fig

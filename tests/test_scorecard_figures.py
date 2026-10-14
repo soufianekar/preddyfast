@@ -117,7 +117,7 @@ def test_subtitle_states_the_fixed_caveats():
     precip = figures.figure_text(
         figures.make_scorecard_fig(_table("precipitation_24h", "mae"), "precipitation_24h", "mae", False, CTX)
     )
-    assert "24 h totals ending 06 UTC — never hourly sums" in precip
+    assert "24 h totals 06–06 UTC reported by the station — never hourly sums" in precip
 
 
 def test_precipitation_without_a_day_1_column_still_draws():
@@ -287,3 +287,467 @@ def test_cell_on_few_runs_says_so_in_hover():
     h = _heat(figures.make_scorecard_fig(table, "temperature_2m", "rmse", False, CTX))
     row = list(h.y).index(GRID_STORES["gefs"]["label"])
     assert h.customdata[row][8][4] == " (<5 runs)"
+
+
+# --- Task 6: display modes, significance marks, diagnostic figures --------------
+
+MODE_HC = (
+    "height-corrected with ERA5 orography (a proxy for each model's own), 0.0065 K/m"
+)
+MODE_REP = (
+    "accounting for representativeness (ECMWF TM865 perturbed ensemble, "
+    "ΔA = native grid spacing)"
+)
+SIG_FOOTER = (
+    "• significant at 95 % (moving-block bootstrap over runs, paired against "
+    "ECMWF IFS ENS)"
+)
+
+
+def _sig_rows(table, score="rmse", sig_by_cell=None):
+    """lead_relative rows: % change plus diff/lo/hi/sig for `score`."""
+    from utils.scorecard import relative_to
+
+    rel = relative_to(table, "ifs_ens")
+    rel[f"diff_{score}"] = 0.2
+    rel[f"lo_{score}"] = 0.1
+    rel[f"hi_{score}"] = 0.3
+    rel[f"sig_{score}"] = 0.0
+    for (store, day), value in (sig_by_cell or {}).items():
+        hit = (rel["store"] == store) & (rel["lead_day"] == day)
+        rel.loc[hit, f"sig_{score}"] = value
+    rel.loc[rel["store"] == "ifs_ens", f"sig_{score}"] = np.nan
+    return rel
+
+
+def _sig_fig(sig_by_cell, relative=True):
+    table = _table(low=())
+    rel = _sig_rows(table, sig_by_cell=sig_by_cell)
+    return figures.make_scorecard_fig(
+        table, "temperature_2m", "rmse", relative, _ctx(relative_rows=rel)
+    )
+
+
+def test_significant_cells_get_a_dot_and_others_none():
+    fig = _sig_fig({("gefs", 2): 1.0, ("gefs", 3): 0.0, ("gefs", 4): np.nan})
+    (dots,) = [t for t in fig.data if t.name == "significant at 95 %"]
+    gefs = GRID_STORES["gefs"]["label"]
+    assert list(zip(dots.x, dots.y)) == [(2, gefs)]
+    assert SIG_FOOTER in figures.figure_text(fig)
+
+
+def test_significance_hover_distinguishes_not_assessed():
+    fig = _sig_fig({("gefs", 2): 1.0, ("gefs", 3): 0.0, ("gefs", 4): np.nan})
+    h = _heat(fig)
+    row = list(h.y).index(GRID_STORES["gefs"]["label"])
+    sig, no, nan = (h.customdata[row][d - 1][5] for d in (2, 3, 4))
+    assert sig.startswith("significant at 95 %") and "[+0.1, +0.3] °C" in sig
+    assert no.startswith("not significant") and "°C" in no
+    assert "not assessed" in nan and "°C" not in nan
+    assert "pairs both models share" in sig
+    assert "%{customdata[5]}" in h.hovertemplate
+
+
+def test_no_significance_columns_no_dots_no_footer():
+    fig = figures.make_scorecard_fig(_table(), "temperature_2m", "rmse", True, CTX)
+    assert not [t for t in fig.data if t.name == "significant at 95 %"]
+    assert "moving-block" not in figures.figure_text(fig)
+
+
+def test_sig_frame_argument_marks_cells():
+    table = _table(low=())
+    sig = pd.DataFrame(
+        {
+            "variable": "temperature_2m",
+            "store": ["gefs", "gefs"],
+            "lead_day": [5, 6],
+            "diff": [0.4, 0.1],
+            "lo": [0.2, -0.1],
+            "hi": [0.6, 0.3],
+            "sig": [1.0, 0.0],
+        }
+    )
+    fig = figures.make_scorecard_fig(
+        table, "temperature_2m", "rmse", True, CTX, sig=sig
+    )
+    (dots,) = [t for t in fig.data if t.name == "significant at 95 %"]
+    assert list(dots.x) == [5]
+
+
+@pytest.mark.parametrize(
+    "mode, phrase",
+    [
+        ("raw", "Mode: raw"),
+        ("height_corrected", MODE_HC),
+        ("representativeness", MODE_REP),
+    ],
+)
+def test_scorecard_footer_names_the_mode(mode, phrase):
+    table = _table().assign(mode=mode, mode_applied=True)
+    text = figures.figure_text(
+        figures.make_scorecard_fig(
+            table, "temperature_2m", "rmse", False, CTX, mode=mode
+        )
+    )
+    assert phrase in text
+    if mode == "height_corrected":
+        assert "no height correction" not in text
+
+
+def test_mode_not_applied_says_shown_raw_never_claims_the_mode():
+    table = _table("wind_speed_10m").assign(mode="height_corrected", mode_applied=False)
+    text = figures.figure_text(
+        figures.make_scorecard_fig(
+            table, "wind_speed_10m", "rmse", False, CTX, mode="height_corrected"
+        )
+    )
+    assert "RMSE shown raw in this mode" in text
+    assert MODE_HC not in text
+
+
+def test_contingency_score_is_shown_raw_under_representativeness():
+    table = _table("precipitation_24h", "ets").assign(
+        mode="representativeness", mode_applied=True
+    )
+    text = figures.figure_text(
+        figures.make_scorecard_fig(
+            table, "precipitation_24h", "ets", False, CTX, mode="representativeness"
+        )
+    )
+    assert "ETS shown raw in this mode" in text
+
+
+def test_persistence_skill_under_representativeness_notes_unperturbed():
+    table = _table(score="crpss_persist").assign(
+        mode="representativeness", mode_applied=True
+    )
+    text = figures.figure_text(
+        figures.make_scorecard_fig(
+            table,
+            "temperature_2m",
+            "crpss_persist",
+            False,
+            CTX,
+            mode="representativeness",
+        )
+    )
+    assert "persistence is not perturbed" in text
+
+
+def test_precipitation_footer_names_the_station_window():
+    table = _table("precipitation_24h", "mae", days=range(2, 16))
+    text = figures.figure_text(
+        figures.make_scorecard_fig(table, "precipitation_24h", "mae", False, CTX)
+    )
+    assert "24 h totals 06–06 UTC reported by the station" in text
+
+
+def test_every_extra_score_has_a_label_and_direction():
+    for var, spec in SCORECARD_VARIABLES.items():
+        for score in spec["extra_scores"]:
+            label, unit = figures._score_text(score, var)
+            assert label and score in figures.SCORE_DIRECTION
+    label, _ = figures._score_text("brier_5", "precipitation_24h")
+    assert "5 mm" in label
+    assert "10 mm" in figures._score_text("roc_area_10", "precipitation_24h")[0]
+
+
+# --- diagnostic tables ---------------------------------------------------------
+
+
+def _lead_diag(stores=("ifs_ens", "gefs", "gfs"), mode="raw", applied=True):
+    rows = []
+    for store in stores:
+        det = GRID_STORES[store].get("kind") == "deterministic"
+        for d in range(1, 11):
+            rows.append(
+                {
+                    "kind": "lead",
+                    "mode": mode,
+                    "mode_applied": applied,
+                    "period_days": 14,
+                    "variable": "temperature_2m",
+                    "store": store,
+                    "lead_day": d,
+                    "error_sd": 1.0 + 0.2 * d,
+                    "spread_error": np.nan if det else 0.8,
+                    "n": 500,
+                    "n_inits": 14,
+                    "low_n": False,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _diurnal(mode="raw"):
+    rows = []
+    for store in ("ifs_ens", "gefs"):
+        for g in ("1-3", "4-7", "8-15"):
+            for h in (0, 6, 12, 18):
+                rows.append(
+                    {
+                        "kind": "diurnal",
+                        "mode": mode,
+                        "mode_applied": True,
+                        "variable": "temperature_2m",
+                        "store": store,
+                        "lead_group": g,
+                        "valid_hour": h,
+                        "bias": 0.1 * h / 6 - 0.2,
+                        "rmse": 1.5,
+                        "error_sd": 1.4,
+                        "n": 300,
+                        "n_inits": 14,
+                        "low_n": False,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def _rank(mode="raw", stores=("ifs_ens", "gefs", "aifs_ens")):
+    rows = []
+    for store in stores:
+        for day in (1, 3):
+            for b in range(10):
+                count = 50.0 + (20 if b in (0, 9) else 0)
+                rows.append(
+                    {
+                        "kind": "rank",
+                        "mode": mode,
+                        "mode_applied": True,
+                        "variable": "temperature_2m",
+                        "store": store,
+                        "lead_day": day,
+                        "bin": b,
+                        "count": count,
+                        "n": 580.0,
+                        "freq": count / 580.0,
+                        "n_inits": 14,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def _reliability(mode="raw", applied=True):
+    rows = []
+    for store in ("ifs_ens", "gefs"):
+        for t in (1.0, 5.0):
+            for g in ("1-3", "4-7"):
+                for b in range(10):
+                    rows.append(
+                        {
+                            "kind": "reliability",
+                            "mode": mode,
+                            "mode_applied": applied,
+                            "variable": "precipitation_24h",
+                            "store": store,
+                            "threshold": t,
+                            "lead_group": g,
+                            "bin": b,
+                            "bin_lo": b / 10,
+                            "bin_hi": (b + 1) / 10,
+                            "p_mean": b / 10 + 0.05,
+                            "obs_freq": min(1.0, b / 10 + 0.1),
+                            "count": 1000.0 / (b + 1),
+                            "n_inits": 14,
+                        }
+                    )
+    return pd.DataFrame(rows)
+
+
+def _roc(mode="raw"):
+    rows = []
+    for store, area in (("ifs_ens", 0.83), ("gefs", 0.78)):
+        for t in (1.0, 5.0):
+            for g in ("1-3", "4-7"):
+                for j in range(6):
+                    rows.append(
+                        {
+                            "kind": "roc",
+                            "mode": mode,
+                            "mode_applied": True,
+                            "variable": "precipitation_24h",
+                            "store": store,
+                            "threshold": t,
+                            "lead_group": g,
+                            "j": j,
+                            "prob_threshold": j / 5,
+                            "pod": 1 - (j / 5) ** 0.5,
+                            "pofd": (1 - j / 5) ** 2,
+                            "area": area,
+                            "n": 400,
+                        }
+                    )
+    return pd.DataFrame(rows)
+
+
+DIAG = {
+    "spread_error": lambda t, mode: figures.make_spread_error_fig(
+        t, "temperature_2m", mode
+    ),
+    "diurnal": lambda t, mode: figures.make_diurnal_fig(
+        t, "temperature_2m", "bias", mode
+    ),
+    "rank": lambda t, mode: figures.make_rank_histogram_fig(
+        t, "temperature_2m", 1, mode
+    ),
+    "reliability": lambda t, mode: figures.make_reliability_fig(
+        t, "precipitation_24h", 1.0, "1-3", mode
+    ),
+    "roc": lambda t, mode: figures.make_roc_fig(
+        t, "precipitation_24h", 1.0, "1-3", mode
+    ),
+}
+TABLES = {
+    "spread_error": _lead_diag,
+    "diurnal": _diurnal,
+    "rank": _rank,
+    "reliability": _reliability,
+    "roc": _roc,
+}
+
+
+@pytest.mark.parametrize("kind", list(DIAG))
+@pytest.mark.parametrize(
+    "mode, phrase",
+    [
+        ("raw", "Mode: raw"),
+        ("representativeness", MODE_REP),
+    ],
+)
+def test_diagnostic_footer_names_the_mode_and_hover_has_units(kind, mode, phrase):
+    fig = DIAG[kind](TABLES[kind](mode=mode), mode)
+    assert phrase in figures.figure_text(fig)
+    data = [t for t in fig.data if t.hovertemplate]
+    assert data
+    unit = {
+        "spread_error": "°C",
+        "diurnal": "°C",
+        "rank": "% of ranks",
+        "reliability": ":.0%}",
+        "roc": ":.0%}",
+    }[kind]
+    assert all(unit in t.hovertemplate for t in data), kind
+
+
+@pytest.mark.parametrize("kind", list(DIAG))
+def test_diagnostic_empty_table_is_no_data(kind):
+    fig = DIAG[kind](TABLES[kind]().iloc[0:0], "raw")
+    assert not fig.data
+    assert "No data available" in [a.text for a in fig.layout.annotations]
+
+
+@pytest.mark.parametrize("kind", list(DIAG))
+def test_diagnostic_ignores_other_modes(kind):
+    fig = DIAG[kind](TABLES[kind](mode="representativeness"), "raw")
+    assert not fig.data
+
+
+def test_mode_not_applied_in_a_diagnostic_says_shown_raw():
+    fig = figures.make_reliability_fig(
+        _reliability(mode="height_corrected", applied=False),
+        "precipitation_24h",
+        1.0,
+        "1-3",
+        "height_corrected",
+    )
+    text = figures.figure_text(fig)
+    assert "shown raw in this mode" in text and MODE_HC not in text
+
+
+def test_spread_error_solid_error_dashed_spread_in_store_colour():
+    fig = figures.make_spread_error_fig(_lead_diag(), "temperature_2m", "raw")
+    ifs = GRID_STORES["ifs_ens"]["label"]
+    err = [t for t in fig.data if t.meta == ("ifs_ens", "error_sd")]
+    spr = [t for t in fig.data if t.meta == ("ifs_ens", "spread")]
+    assert len(err) == 1 and len(spr) == 1
+    assert err[0].line.dash in (None, "solid") and spr[0].line.dash == "dash"
+    assert err[0].line.color == spr[0].line.color == figures._store_color("ifs_ens")
+    assert np.allclose(spr[0].y, 0.8 * np.asarray(err[0].y))
+    assert ifs in err[0].name
+    # deterministic GFS: error SD only, no spread or ratio
+    assert not [
+        t for t in fig.data if t.meta and t.meta[0] == "gfs" and t.meta[1] != "error_sd"
+    ]
+    ratio = [t for t in fig.data if t.meta == ("ifs_ens", "ratio")]
+    assert len(ratio) == 1 and ratio[0].yaxis == "y2"
+    assert any(s.y0 == 1 and s.y1 == 1 for s in fig.layout.shapes)
+
+
+def test_diurnal_one_line_per_store_per_panel_at_synoptic_hours():
+    fig = figures.make_diurnal_fig(_diurnal(), "temperature_2m", "bias", "raw")
+    lines = [t for t in fig.data if t.type == "scatter"]
+    assert len(lines) == 2 * 3
+    assert all(list(t.x) == [0, 6, 12, 18] for t in lines)
+    assert sum(t.showlegend is not False for t in lines) == 2
+    assert any(s.y0 == 0 for s in fig.layout.shapes)
+    sd = figures.make_diurnal_fig(_diurnal(), "temperature_2m", "error_sd", "raw")
+    assert "Error SD" in figures.figure_text(sd)
+
+
+def test_rank_histogram_one_panel_per_store_flat_reference_and_caption():
+    fig = figures.make_rank_histogram_fig(_rank(), "temperature_2m", 1, "raw")
+    bars = [t for t in fig.data if t.type == "bar"]
+    assert len(bars) == 3 and len({t.xaxis for t in bars}) == 3
+    assert all(len(t.x) == 10 for t in bars)
+    flat = [s for s in fig.layout.shapes if s.y0 == s.y1]
+    assert len(flat) == 3 and all(np.isclose(s.y0, 10.0) for s in flat)  # 1/bins in %
+    text = figures.figure_text(fig)
+    assert "U-shape = under-dispersive, ∩ = over-dispersive, slope = bias" in text
+    assert "day 1" in text.lower()
+
+
+def test_reliability_has_diagonal_sized_points_and_sharpness_inset():
+    fig = figures.make_reliability_fig(
+        _reliability(), "precipitation_24h", 5.0, "1-3", "raw"
+    )
+    pts = [t for t in fig.data if t.meta and t.meta[1] == "reliability"]
+    assert len(pts) == 2
+    sizes = np.asarray(pts[0].marker.size, dtype=float)
+    assert sizes[0] > sizes[-1]  # bin 0 has the most forecasts
+    sharp = [t for t in fig.data if t.meta and t.meta[1] == "sharpness"]
+    assert len(sharp) == 2 and sharp[0].xaxis == "x2"
+    assert any(
+        s.x0 == 0 and s.y0 == 0 and s.x1 == 1 and s.y1 == 1 for s in fig.layout.shapes
+    )
+    text = figures.figure_text(fig)
+    assert "≥ 5 mm" in text and "24 h totals 06–06 UTC reported by the station" in text
+    assert "count" in pts[0].hovertemplate
+
+
+def test_roc_curve_per_store_with_area_in_legend_and_diagonal():
+    fig = figures.make_roc_fig(_roc(), "precipitation_24h", 1.0, "1-3", "raw")
+    curves = [t for t in fig.data if t.type == "scatter" and t.name]
+    names = [t.name for t in curves]
+    assert any(GRID_STORES["ifs_ens"]["label"] in n and "0.83" in n for n in names)
+    assert any(GRID_STORES["gefs"]["label"] in n and "0.78" in n for n in names)
+    assert any(
+        s.x0 == 0 and s.y0 == 0 and s.x1 == 1 and s.y1 == 1 for s in fig.layout.shapes
+    )
+    assert "≥ 1 mm" in figures.figure_text(fig)
+
+
+def test_lead_and_station_figures_name_their_mode():
+    table = _table().assign(mode="height_corrected", mode_applied=True)
+    lead = figures.make_score_lead_fig(
+        table, "temperature_2m", "rmse", CTX, mode="height_corrected"
+    )
+    assert MODE_HC in figures.figure_text(lead)
+    assert not figures.make_score_lead_fig(table, "temperature_2m", "rmse", CTX).data
+    df = pd.DataFrame(
+        {
+            "variable": "temperature_2m",
+            "store": "ifs_ens",
+            "station": ["A"],
+            "lat": [48.1],
+            "lon": [11.5],
+            "rmse": [1.0],
+            "n": [100],
+            "mode": "representativeness",
+            "mode_applied": True,
+        }
+    )
+    station = figures.make_station_score_map(
+        df, "temperature_2m", "rmse", CTX, mode="representativeness"
+    )
+    assert MODE_REP in figures.figure_text(station)
