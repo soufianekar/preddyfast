@@ -376,6 +376,8 @@ GRID_STORES: dict[str, dict] = {
     "ifs_ens": {
         "members": 51,
         "res_deg": 0.25,
+        # TM865 averaging scale dA; TCo1279 octahedral grid, Cy48r1 since June 2023.
+        "native_km": 9,
         "label": "ECMWF IFS ENS",
         "kind": "ensemble",
         "family": "ECMWF",
@@ -397,6 +399,8 @@ GRID_STORES: dict[str, dict] = {
     "ifs_control": {
         "members": 1,
         "res_deg": 0.25,
+        # TM865 averaging scale dA; same TCo1279 run as the ENS control (Cy48r1).
+        "native_km": 9,
         "label": "ECMWF IFS Control",
         "kind": "deterministic",
         "family": "ECMWF",
@@ -414,6 +418,8 @@ GRID_STORES: dict[str, dict] = {
     "aifs_ens": {
         "members": 51,
         "res_deg": 0.25,
+        # TM865 averaging scale dA; N320 reduced Gaussian grid.
+        "native_km": 31,
         "label": "ECMWF AIFS ENS",
         "kind": "ensemble",
         "family": "ECMWF",
@@ -431,6 +437,8 @@ GRID_STORES: dict[str, dict] = {
     "aifs_single": {
         "members": 1,
         "res_deg": 0.25,
+        # TM865 averaging scale dA; N320 reduced Gaussian grid.
+        "native_km": 31,
         "label": "ECMWF AIFS Single",
         "kind": "deterministic",
         "family": "ECMWF",
@@ -447,6 +455,8 @@ GRID_STORES: dict[str, dict] = {
     "gefs": {
         "members": 31,
         "res_deg": 0.25,
+        # TM865 averaging scale dA; C384 cubed sphere (NCEP GEFS v12).
+        "native_km": 25,
         "label": "NOAA GEFS",
         "kind": "ensemble",
         "family": "NOAA",
@@ -461,6 +471,8 @@ GRID_STORES: dict[str, dict] = {
     "gfs": {
         "members": 1,
         "res_deg": 0.25,
+        # TM865 averaging scale dA; C768 cubed sphere (NCEP GFS FV3).
+        "native_km": 13,
         "label": "NOAA GFS",
         "kind": "deterministic",
         "family": "NOAA",
@@ -474,6 +486,8 @@ GRID_STORES: dict[str, dict] = {
     "icon_eu": {
         "members": 1,
         "res_deg": 0.0625,
+        # TM865 averaging scale dA; DWD ICON-EU nest, 0.0625 deg native.
+        "native_km": 6.5,
         "label": "DWD ICON-EU",
         "kind": "deterministic",
         "family": "DWD",
@@ -1900,6 +1914,10 @@ SCORECARD_STORES: tuple[str, ...] = (
 )
 # 14 inits, anchored on the GHCNh observation end rather than today (the feed
 # lags ~6 days; see scorecard._window).
+# Fixed seed so a rescore draws the same TM865 perturbations (date of Memo 865).
+SCORECARD_RNG_SEED: int = 20201110
+# Perturbed draws a deterministic store is expanded to, to stay CRPS-comparable.
+SCORECARD_DETERMINISTIC_DRAWS: int = 50
 SCORECARD_DAYS: int = 14
 SCORECARD_INIT_HOUR: int = 0
 SCORECARD_MAX_STATIONS: int = 200
