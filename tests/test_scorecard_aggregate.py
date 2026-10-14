@@ -323,3 +323,262 @@ def test_lead_zero_z500_rows_and_control_self_pairs_never_reach_the_aggregates()
     assert ctrl["n"] == 1 and ctrl["bias"] == pytest.approx(2.0)
     assert ctrl["rmse"] == pytest.approx(2.0)
     assert (agg["n"] == 1).all()  # no lead-0 pair of either store counted
+
+
+# --- Task 5: new scores, modes, significance, diagnostics ------------------------
+
+INITS10 = [NEWEST - pd.Timedelta(days=d) for d in range(10)]
+
+
+def test_error_sd_removes_the_bias():
+    rows = _err_rows([1.5, 1.5, -0.5, -0.5], stations=("A", "B", "C", "D"))
+    row = _one(scorecard.aggregate(rows, 7, min_n=1), lead_day=1)
+    assert row["bias"] == pytest.approx(0.5)
+    assert row["error_sd"] == pytest.approx(1.0)
+
+
+def test_spread_error_is_one_when_spread_matches_the_error_variance():
+    m = 51
+    rows = _err_rows([1.5, 1.5, -0.5, -0.5], stations=("A", "B", "C", "D"),
+                     spread2=1.0 * m / (m + 1), n_members=float(m))
+    row = _one(scorecard.aggregate(rows, 7, min_n=1), lead_day=1)
+    assert row["spread_error"] == pytest.approx(1.0)
+
+
+def test_spread_error_uses_the_perturbed_member_count_in_representativeness():
+    rows = _err_rows([1.5, 1.5, -0.5, -0.5], stations=("A", "B", "C", "D"),
+                     store="gfs", n_members=1.0, n_members_pert=50.0,
+                     err_pert=[1.5, 1.5, -0.5, -0.5], crps_pert=0.3,
+                     spread2_pert=50.0 / 51.0)
+    raw = _one(scorecard.aggregate(rows, 7, min_n=1), lead_day=1)
+    pert = _one(scorecard.aggregate(rows, 7, min_n=1, mode="representativeness"),
+                lead_day=1)
+    assert np.isnan(raw["spread_error"])
+    assert pert["spread_error"] == pytest.approx(1.0)
+
+
+def test_a_forecast_equal_to_persistence_has_zero_persistence_skill():
+    err = np.array([1.0, -2.0, 0.5, 3.0])
+    rows = _err_rows(err, stations=("A", "B", "C", "D"), obs=10.0,
+                     obs_persist=10.0 + err, crps=np.abs(err))
+    # A pair with no persistence observation enters neither side.
+    extra = _err_rows(50.0, stations=("E",), obs=10.0, obs_persist=np.nan, crps=50.0)
+    row = _one(scorecard.aggregate(pd.concat([rows, extra]), 7, min_n=1), lead_day=1)
+    assert row["rmse_ss_persist"] == pytest.approx(0.0)
+    assert row["crpss_persist"] == pytest.approx(0.0)
+
+
+def test_persistence_skill_of_a_perfect_forecast_is_one():
+    rows = _err_rows(0.0, stations=("A", "B"), obs=10.0, obs_persist=[12.0, 7.0])
+    row = _one(scorecard.aggregate(rows, 7, min_n=1), lead_day=1)
+    assert row["rmse_ss_persist"] == pytest.approx(1.0)
+    assert row["crpss_persist"] == pytest.approx(1.0)
+
+
+def test_height_corrected_mode_uses_err_hc_for_temperature_only():
+    t2m = _err_rows(1.0, err_hc=2.0, crps_hc=0.7)
+    hc = _one(scorecard.aggregate(t2m, 7, min_n=1, mode="height_corrected"), lead_day=1)
+    assert hc["rmse"] == pytest.approx(2.0) and hc["bias"] == pytest.approx(2.0)
+    assert hc["crps"] == pytest.approx(0.7) and bool(hc["mode_applied"]) is True
+    raw = _one(scorecard.aggregate(t2m, 7, min_n=1), lead_day=1)
+    assert raw["rmse"] == pytest.approx(1.0) and bool(raw["mode_applied"]) is True
+
+    wind = _err_rows(1.0, variable="wind_speed_10m", err_hc=2.0, crps_hc=0.7)
+    w = _one(scorecard.aggregate(wind, 7, min_n=1, mode="height_corrected"), lead_day=1)
+    assert w["rmse"] == pytest.approx(1.0) and bool(w["mode_applied"]) is False
+
+
+def test_representativeness_mode_uses_the_perturbed_columns():
+    wind = _err_rows(1.0, variable="wind_speed_10m", err_pert=3.0, crps_pert=0.4)
+    row = _one(scorecard.aggregate(wind, 7, min_n=1, mode="representativeness"),
+               lead_day=1)
+    assert row["rmse"] == pytest.approx(3.0) and row["crps"] == pytest.approx(0.4)
+    assert bool(row["mode_applied"]) is True
+    z = _err_rows(1.0, variable="z500", err_pert=3.0)
+    zr = _one(scorecard.aggregate(z, 7, min_n=1, mode="representativeness"), lead_day=1)
+    assert zr["rmse"] == pytest.approx(1.0) and bool(zr["mode_applied"]) is False
+
+
+def test_bias_correction_follows_the_mode_error_column():
+    rows = _err_rows(1.0, inits=INITS10[:5], stations=("A", "B"),
+                     err_hc=[3.0, 1.0] * 5)
+    row = _one(scorecard.aggregate(rows, 7, min_n=1, mode="height_corrected"),
+               lead_day=1)
+    assert row["rmse_bc"] == pytest.approx(0.0)  # each station's own offset removed
+
+
+def test_per_threshold_contingency_and_brier():
+    h, m, f, cn = 10, 5, 3, 82
+    rows = _counts_rows(h, m, f, cn)
+    rows = rows.assign(wet_fc_5=rows["wet_fc"], wet_obs_5=rows["wet_obs"], brier_5=0.2)
+    row = _one(scorecard.aggregate(rows, 7, min_n=1), lead_day=1)
+    assert row["pod_5"] == pytest.approx(h / (h + m))
+    assert row["far_5"] == pytest.approx(f / (h + f))
+    assert row["fbi_5"] == pytest.approx((h + f) / (h + m))
+    assert row["ets_5"] == pytest.approx(row["ets"])
+    assert row["brier_5"] == pytest.approx(0.2)
+    assert np.isnan(row["ets_10"])
+
+
+def _prob_rows(p, wet, store="ifs_ens", m=50, inits=(NEWEST,), leads=(24.0,), **kw):
+    """Precipitation pairs with given member fractions and observed events."""
+    p = np.asarray(p, dtype=float)
+    stations = [f"S{i}" for i in range(p.size)]
+    return _rows(store=store, variable="precipitation_24h", stations=stations,
+                 inits=inits, leads=leads, p_1=np.tile(p, len(inits) * len(leads)),
+                 wet_obs_1=np.tile(np.asarray(wet, dtype=float), len(inits) * len(leads)),
+                 n_members=float(m), n_members_pert=float(m), **kw)
+
+
+def test_roc_area_of_a_perfect_forecast_is_one_and_of_a_random_one_half():
+    wet = np.r_[np.ones(50), np.zeros(50)]
+    perfect = _prob_rows(wet, wet)
+    row = _one(scorecard.aggregate(perfect, 7, min_n=1), lead_day=1)
+    assert row["roc_area_1"] == pytest.approx(1.0)
+
+    rng = np.random.default_rng(1)
+    n = 4000
+    rand = _prob_rows(rng.integers(0, 51, n) / 50, rng.random(n) < 0.3)
+    row = _one(scorecard.aggregate(rand, 7, min_n=1), lead_day=1)
+    assert row["roc_area_1"] == pytest.approx(0.5, abs=0.03)
+
+
+def test_roc_points_include_the_corners_and_area_matches():
+    wet = np.r_[np.ones(50), np.zeros(50)]
+    pts = scorecard.roc(_prob_rows(wet, wet), 7, 1.0)
+    assert {(0.0, 0.0), (1.0, 1.0)} <= set(zip(pts["pofd"], pts["pod"]))
+    assert pts["area"].unique() == pytest.approx([1.0])
+
+
+def test_reliability_of_reliable_probabilities_lies_on_the_diagonal():
+    rng = np.random.default_rng(2)
+    n = 40000
+    p = rng.integers(0, 51, n) / 50
+    rows = _prob_rows(p, rng.random(n) < p)
+    rel = scorecard.reliability(rows, 7, 1.0)
+    rel = rel[(rel["store"] == "ifs_ens") & (rel["lead_group"] == "1-3")]
+    assert len(rel) == 10 and rel["count"].sum() == n
+    np.testing.assert_allclose(rel["obs_freq"], rel["p_mean"], atol=0.03)
+    assert rel["bin_lo"].tolist() == pytest.approx(np.arange(10) / 10)
+
+
+def test_reliability_of_p_one_falls_in_the_last_bin():
+    rows = _prob_rows([1.0, 0.0, 0.1], [1, 0, 0])
+    rel = scorecard.reliability(rows, 7, 1.0).set_index("bin")
+    assert rel.loc[9, "count"] == 1 and rel.loc[0, "count"] == 1
+    assert rel.loc[1, "count"] == 1
+
+
+def test_deterministic_store_has_reliability_only_when_perturbed():
+    rows = _prob_rows([1.0, 0.0], [1, 0], store="gfs", m=1,
+                      p_pert_1=[0.9, 0.1], err_pert=0.0).assign(n_members=1.0, n_members_pert=50.0)
+    assert scorecard.reliability(rows, 7, 1.0).empty
+    assert scorecard.roc(rows, 7, 1.0).empty
+    raw = _one(scorecard.aggregate(rows, 7, min_n=1), lead_day=1)
+    assert np.isnan(raw["roc_area_1"])
+    pert = scorecard.reliability(rows, 7, 1.0, mode="representativeness")
+    assert pert["count"].sum() == 2
+    assert not scorecard.roc(rows, 7, 1.0, mode="representativeness").empty
+
+
+@pytest.mark.parametrize("m", [50, 30])
+def test_rank_histogram_of_exchangeable_integer_ranks_is_exactly_flat(m):
+    ranks = np.tile(np.arange(m + 1, dtype=float), 3)
+    stations = [f"S{i}" for i in range(ranks.size)]
+    rows = _rows(stations=stations, rank=ranks, n_members=float(m))
+    hist = scorecard.rank_histogram(rows, 7, lead_days=(1,))
+    assert len(hist) == 10
+    np.testing.assert_allclose(hist["count"], ranks.size / 10)
+    np.testing.assert_allclose(hist["freq"], 0.1)
+
+
+def test_rank_histogram_of_random_exchangeable_draws_is_flat():
+    rng = np.random.default_rng(3)
+    m, n = 9, 20000
+    members = rng.normal(size=(n, m))
+    obs = rng.normal(size=n)
+    ranks = (members < obs[:, None]).sum(axis=1).astype(float)
+    rows = _rows(stations=[f"S{i}" for i in range(n)], rank=ranks, n_members=float(m))
+    hist = scorecard.rank_histogram(rows, 7, lead_days=(1,))
+    np.testing.assert_allclose(hist["freq"], 0.1, atol=0.01)
+
+
+def test_rank_histogram_uses_rank_pert_in_representativeness():
+    rows = _rows(stations=("A",), store="gfs", rank=np.nan, n_members=1.0,
+                 rank_pert=50.0, n_members_pert=50.0, err_pert=0.0)
+    assert scorecard.rank_histogram(rows, 7, lead_days=(1,)).empty
+    pert = scorecard.rank_histogram(rows, 7, lead_days=(1,), mode="representativeness")
+    assert pert.set_index("bin").loc[9, "count"] == pytest.approx(1.0)  # 50.5/51 in bin 9
+
+
+def test_diurnal_groups_by_valid_hour_and_lead_group():
+    leads = (6.0, 12.0, 18.0, 24.0, 30.0, 102.0)
+    err = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    rows = _err_rows(err, leads=leads)
+    d = scorecard.diurnal(rows, 7)
+    first = d[d["lead_group"] == "1-3"].set_index("valid_hour")
+    assert sorted(first.index) == [0, 6, 12, 18]
+    assert first.loc[6, "bias"] == pytest.approx(3.0)  # leads 6 and 30
+    assert first.loc[6, "n"] == 2 and first.loc[6, "error_sd"] == pytest.approx(2.0)
+    assert d[d["lead_group"] == "4-7"]["valid_hour"].tolist() == [6]
+
+
+def _paired(store_err, base_err, inits=INITS10, stations=("A", "B", "C")):
+    return pd.concat([
+        _err_rows(base_err, store="ifs_ens", inits=inits, stations=stations),
+        _err_rows(store_err, store="gfs", inits=inits, stations=stations),
+    ], ignore_index=True)
+
+
+def test_significance_of_identical_rows_is_zero_and_not_significant():
+    rng = np.random.default_rng(4)
+    err = rng.normal(size=len(INITS10) * 3)
+    sig = scorecard.significance(_paired(err, err), score="rmse", period_days=14)
+    gfs = _one(sig, store="gfs", lead_day=1)
+    assert gfs["diff"] == pytest.approx(0.0) and bool(gfs["sig"]) is False
+    base = _one(sig, store="ifs_ens", lead_day=1)
+    assert base["diff"] == 0.0 and np.isnan(base["sig"])
+
+
+@pytest.mark.parametrize("score", ["mae", "rmse", "crps"])
+def test_significance_of_a_constant_one_kelvin_error_is_significant(score):
+    rows = _paired(1.0, 0.0).assign(crps=lambda r: r["ae"])
+    sig = scorecard.significance(rows, score=score, period_days=14)
+    gfs = _one(sig, store="gfs", lead_day=1)
+    assert gfs["diff"] == pytest.approx(1.0)
+    assert gfs["lo"] > 0 and bool(gfs["sig"]) is True
+
+
+def test_significance_on_rmse_scale_reports_the_rmse_difference():
+    rows = _paired(2.0, 1.0)
+    gfs = _one(scorecard.significance(rows, score="rmse", period_days=14),
+               store="gfs", lead_day=1)
+    assert gfs["diff"] == pytest.approx(1.0)
+    assert gfs["lo"] == pytest.approx(1.0) and gfs["hi"] == pytest.approx(1.0)
+
+
+def test_significance_with_too_few_inits_is_nan_not_false():
+    rows = _paired(1.0, 0.0, inits=INITS10[:3])
+    gfs = _one(scorecard.significance(rows, score="mae", period_days=14),
+               store="gfs", lead_day=1)
+    assert gfs["diff"] == pytest.approx(1.0)
+    assert np.isnan(gfs["sig"]) and np.isnan(gfs["lo"]) and np.isnan(gfs["hi"])
+
+
+def test_significance_is_paired_on_init_station_and_lead():
+    rows = _paired(1.0, 0.0)
+    # An extra gfs station the baseline lacks never enters the comparison.
+    rows = pd.concat([rows, _err_rows(100.0, store="gfs", inits=INITS10,
+                                      stations=("Z",))])
+    gfs = _one(scorecard.significance(rows, score="mae", period_days=14),
+               store="gfs", lead_day=1)
+    assert gfs["diff"] == pytest.approx(1.0)
+
+
+def test_significance_does_not_depend_on_row_order():
+    rng = np.random.default_rng(5)
+    rows = _paired(rng.normal(size=30) + 0.2, rng.normal(size=30))
+    a = scorecard.significance(rows, score="mae", period_days=14)
+    b = scorecard.significance(rows.sample(frac=1.0, random_state=0), score="mae",
+                               period_days=14)
+    pd.testing.assert_frame_equal(a.reset_index(drop=True), b.reset_index(drop=True))

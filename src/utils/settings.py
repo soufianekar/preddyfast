@@ -1996,6 +1996,12 @@ SCORECARD_VARIABLES: dict[str, dict] = {
         "thresholds": None,
         "threshold": None,
         "scores": ("rmse", "mae", "bias", "crps", "rmse_bc", "mae_bc", "spread_skill"),
+        "extra_scores": (
+            "error_sd",
+            "spread_error",
+            "rmse_ss_persist",
+            "crpss_persist",
+        ),
         "completeness": 0.90,
         "tolerance": "15min",
         "reference": "stations",
@@ -2026,6 +2032,8 @@ SCORECARD_VARIABLES: dict[str, dict] = {
             "pod",
             "far",
         ),
+        # Plus the per-threshold scores, added below from `thresholds`.
+        "extra_scores": ("crpss_persist",),
         "completeness": 0.5,
         "tolerance": None,
         "reference": "stations",
@@ -2042,6 +2050,12 @@ SCORECARD_VARIABLES: dict[str, dict] = {
         "thresholds": None,
         "threshold": None,
         "scores": ("rmse", "mae", "bias", "crps"),
+        "extra_scores": (
+            "error_sd",
+            "spread_error",
+            "rmse_ss_persist",
+            "crpss_persist",
+        ),
         "completeness": 0.85,
         "tolerance": "15min",
         "reference": "stations",
@@ -2059,11 +2073,32 @@ SCORECARD_VARIABLES: dict[str, dict] = {
         "thresholds": None,
         "threshold": None,
         "scores": ("rmse", "bias", "crps"),
+        "extra_scores": ("error_sd", "spread_error"),
         "completeness": None,
         "tolerance": None,
         "reference": "control_t0",
     },
 }
+# Scores per event threshold (suffix f"{t:g}", scorecard.threshold_key), offered
+# by every variable with `thresholds`.
+SCORECARD_THRESHOLD_SCORES: tuple[str, ...] = (
+    "ets",
+    "fbi",
+    "pod",
+    "far",
+    "brier",
+    "roc_area",
+)
+for _spec in SCORECARD_VARIABLES.values():
+    _spec["extra_scores"] = (
+        *_spec["extra_scores"],
+        *(
+            f"{score}_{t:g}"
+            for t in _spec["thresholds"] or ()
+            for score in SCORECARD_THRESHOLD_SCORES
+        ),
+    )
+del _spec
 # How each score is judged, shared by `relative_to` and the scorecard figures:
 # "lower" / "higher" is better, a number is the ideal value (closer is better).
 SCORE_DIRECTION: dict[str, str | float] = {
@@ -2080,7 +2115,41 @@ SCORE_DIRECTION: dict[str, str | float] = {
     "bias": 0.0,
     "frequency_bias": 1.0,
     "spread_skill": 1.0,
+    # Error SD = √(MSE − bias²); spread/error SD (TM865 slide 19), ideal 1.
+    "error_sd": "lower",
+    "spread_error": 1.0,
+    # Skill against persistence (the observation one day earlier, or more).
+    "rmse_ss_persist": "higher",
+    "crpss_persist": "higher",
+    # Per event threshold of every variable (suffix f"{t:g}", scorecard.threshold_key).
+    **{
+        f"{score}_{t:g}": direction
+        for t in sorted(
+            {
+                float(t)
+                for v in SCORECARD_VARIABLES.values()
+                for t in v["thresholds"] or ()
+            }
+        )
+        for score, direction in (
+            ("ets", "higher"),
+            ("fbi", 1.0),
+            ("pod", "higher"),
+            ("far", "lower"),
+            ("brier", "lower"),
+            ("roc_area", "higher"),
+        )
+    },
 }
+# Observation display modes of the scorecard (raw is the default everywhere):
+# height-corrected 2 m temperature (TM865 Eq. 2, ERA5 orography as a proxy for
+# each model's own) and the TM865 perturbed ensemble (representativeness).
+SCORECARD_MODES: tuple[str, ...] = ("raw", "height_corrected", "representativeness")
+# Paired moving-block bootstrap over runs (circular blocks of `block_days`
+# consecutive inits), percentile interval at `level`.
+SCORECARD_BOOTSTRAP: dict = {"resamples": 1000, "block_days": 3, "level": 0.95}
+# Lead-day groups of the diurnal, reliability and ROC diagnostics (inclusive).
+SCORECARD_LEAD_GROUPS: tuple[tuple[int, int], ...] = ((1, 3), (4, 7), (8, 15))
 EVAL_LEAD_STEPS: tuple[int, ...] = (6, 12, 24)
 EVAL_LEAD_STEP_DEFAULT: int = 24
 # Thirty 00 UTC runs: a month of daily starts, all verifying at the same

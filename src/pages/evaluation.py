@@ -129,12 +129,13 @@ def _absent_note(meta: dict, variable: str, stores: list[str]) -> str | None:
 def _select(
     agg: pd.DataFrame, kind: str, variable: str, period: int, stores: list[str]
 ) -> pd.DataFrame:
-    """Rows of one kind, variable and period for the chosen models."""
+    """Rows of one kind, variable and period for the chosen models (raw mode)."""
     keep = (
         (agg["kind"] == kind)
         & (agg["variable"] == variable)
         & (agg["period_days"] == period)
         & agg["store"].isin(stores)
+        & (agg["mode"] == "raw")
     )
     return agg.loc[keep]
 

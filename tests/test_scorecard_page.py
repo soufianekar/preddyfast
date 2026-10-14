@@ -62,9 +62,11 @@ def _agg():
 
 def test_aggregates_hold_every_kind_period_and_lead_day(env):
     agg, meta = _agg()
-    assert set(agg["kind"]) == {"lead", "lead_relative", "station"}
-    for kind in ("lead", "lead_relative", "station"):
+    # No ranks or thresholds in these rows: no rank, reliability or roc kinds.
+    assert set(agg["kind"]) == {"lead", "lead_relative", "station", "diurnal"}
+    for kind in ("lead", "lead_relative", "station", "diurnal"):
         assert set(agg.loc[agg["kind"] == kind, "period_days"]) == set(SCORECARD_PERIODS)
+    assert set(agg["mode"]) == {"raw"}  # no hc / perturbed columns in these rows
     station = agg[agg["kind"] == "station"]
     assert set(station["lead_day"]) == {1, 3, 5, 10}
     assert meta["n_stations"] == 2
@@ -216,7 +218,8 @@ def test_stored_relative_rows_equal_relative_to_of_stored_lead_rows(env):
     keys = ["period_days", "variable", "store", "lead_day"]
     lead = agg[agg["kind"] == "lead"]
     stored = agg[agg["kind"] == "lead_relative"].sort_values(keys).reset_index(drop=True)
-    parts = [scorecard.relative_to(g.drop(columns=["kind"])) for _, g in lead.groupby("period_days")]
+    parts = [scorecard.relative_to(g.drop(columns=["kind"]))
+             for _, g in lead.groupby(["mode", "period_days"])]
     again = pd.concat(parts).sort_values(keys).reset_index(drop=True)
     for col in ("rmse", "mae", "crps", "bias"):
         np.testing.assert_allclose(stored[col], again[col], equal_nan=True)
@@ -289,3 +292,116 @@ def test_station_map_of_spread_skill_on_a_deterministic_model_is_a_note(page, mo
     assert not [t for t in station_map.data if t.name == "stations"]
     note = " ".join(a.text for a in station_map.layout.annotations)
     assert "GFS" in note and "deterministic" in note
+
+
+# --- Task 5: modes, new kinds, significance, metadata -----------------------------
+
+
+def _full_rows(n_days=10):
+    """Synthetic rows with every Task 4 column, for two ensembles and GFS."""
+    rng = np.random.default_rng(7)
+    frames = []
+    inits = pd.date_range(NEWEST - pd.Timedelta(days=n_days - 1), NEWEST)
+    for variable in ("temperature_2m", "precipitation_24h"):
+        for k, store in enumerate(("ifs_ens", "gefs", "gfs")):
+            leads = [30.0, 54.0, 126.0] if variable == "precipitation_24h" else [
+                6.0, 12.0, 24.0, 72.0, 120.0, 240.0]
+            idx = pd.MultiIndex.from_product(
+                [inits, ["A", "B"], leads], names=["init", "station", "lead_hours"]
+            ).to_frame(index=False)
+            n = len(idx)
+            m = 1.0 if store == "gfs" else 50.0
+            err = rng.normal(0.5 * k, 1.0, n)
+            obs = rng.gamma(1.0, 3.0, n)
+            p = rng.integers(0, 51, n) / 50
+            cols = dict(
+                store=store, variable=variable,
+                valid_time=idx["init"] + pd.to_timedelta(idx["lead_hours"], unit="h"),
+                obs=obs, fc_mean=obs + err, err=err, ae=np.abs(err), se=err**2,
+                crps=np.abs(err) / 2, spread2=np.nan if m == 1 else 1.0,
+                wet_fc=(obs + err >= 1).astype(float), wet_obs=(obs >= 1).astype(float),
+                brier=np.nan if m == 1 else 0.1,
+                dz=np.where(idx["station"] == "A", 50.0, np.nan),
+                err_hc=np.where(idx["station"] == "A", err + 0.3, np.nan),
+                crps_hc=np.where(idx["station"] == "A", np.abs(err) / 2, np.nan),
+                crps_pert=np.abs(err) / 3, spread2_pert=1.2, err_pert=err,
+                rank=np.nan if m == 1 else rng.integers(0, 51, n).astype(float),
+                rank_pert=rng.integers(0, 51, n).astype(float),
+                n_members=m, n_members_pert=50.0, obs_persist=obs + rng.normal(0, 2, n),
+            )
+            if variable == "temperature_2m":
+                cols.update(wet_fc=np.nan, wet_obs=np.nan, brier=np.nan)
+            for t in (1, 5, 10):
+                on = variable == "precipitation_24h"
+                cols.update({
+                    f"p_{t}": p if on and m > 1 else (obs + err >= t) * 1.0 if on else np.nan,
+                    f"p_pert_{t}": p if on else np.nan,
+                    f"wet_fc_{t}": (obs + err >= t) * 1.0 if on else np.nan,
+                    f"wet_obs_{t}": (obs >= t) * 1.0 if on else np.nan,
+                    f"brier_{t}": 0.1 if on and m > 1 else np.nan,
+                    f"brier_pert_{t}": 0.12 if on else np.nan,
+                })
+            frames.append(idx.assign(**cols))
+    return pd.concat(frames, ignore_index=True)
+
+
+@pytest.fixture
+def full_env(env, monkeypatch):
+    rows = _full_rows()
+    monkeypatch.setattr(
+        scores_db, "load_rows",
+        lambda stores, variables, start, end: rows[
+            rows["store"].isin(stores) & rows["variable"].isin(variables)
+        ].reset_index(drop=True),
+    )
+    return rows
+
+
+def test_full_aggregates_hold_every_kind_and_mode(full_env):
+    from utils.settings import SCORECARD_MODES
+
+    agg, meta = _agg()
+    assert set(agg["kind"]) == {
+        "lead", "lead_relative", "station", "diurnal", "rank", "reliability", "roc"
+    }
+    assert set(agg["mode"]) == set(SCORECARD_MODES)
+    assert meta["modes"] == list(SCORECARD_MODES)
+    assert meta["height_corrected_excluded"] == 1  # station B has no dz
+    assert meta["orography_source"].startswith("ERA5")
+    hc = agg[(agg["kind"] == "lead") & (agg["mode"] == "height_corrected")]
+    t2m = hc[hc["variable"] == "temperature_2m"]
+    assert t2m["mode_applied"].all() and (t2m["n_stations"] == 1).all()
+    assert not hc[hc["variable"] == "precipitation_24h"]["mode_applied"].any()
+    rel = agg[(agg["kind"] == "reliability")]
+    assert set(rel["threshold"]) == {1.0, 5.0, 10.0}
+    raw_gfs = rel[(rel["mode"] == "raw") & (rel["store"] == "gfs")]
+    pert_gfs = rel[(rel["mode"] == "representativeness") & (rel["store"] == "gfs")]
+    assert raw_gfs.empty and not pert_gfs.empty
+
+
+def test_relative_rows_carry_significance_columns(full_env):
+    agg, _ = _agg()
+    rel = agg[(agg["kind"] == "lead_relative") & (agg["mode"] == "raw")
+              & (agg["variable"] == "temperature_2m")]
+    assert {"diff_rmse", "lo_rmse", "hi_rmse", "sig_rmse", "sig_crps"} <= set(rel.columns)
+    base = rel[rel["store"] == "ifs_ens"]
+    assert (base["diff_rmse"] == 0).all() and base["sig_rmse"].isna().all()
+    gefs = rel[rel["store"] == "gefs"]
+    assert gefs["sig_rmse"].notna().all()  # 10 runs >= SCORECARD_MIN_INITS
+
+
+def test_page_reads_raw_rows_only_and_old_files_default_to_raw(full_env, page):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    agg, _ = _agg()
+    heat, _, _, alert, _ = _call(page, display="absolute")
+    assert alert is None or getattr(alert, "color", None) != "red"
+    assert heat.data
+    sel = page._select(agg, "lead", "temperature_2m", 7, ["ifs_ens"])
+    assert set(sel["mode"]) == {"raw"} and sel["lead_day"].is_unique
+    old = agg[(agg["mode"] == "raw")].drop(columns=["mode", "mode_applied"])
+    table = pa.Table.from_pandas(old, preserve_index=False)
+    pq.write_table(table, scorecard.aggregates_path())
+    again, _ = scorecard.load_aggregates()
+    assert set(again["mode"]) == {"raw"} and again["mode_applied"].all()

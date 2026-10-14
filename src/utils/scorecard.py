@@ -45,12 +45,15 @@ from utils.settings import (
     GRID_STORES,
     PRECOMPUTE_DIR,
     SCORE_DIRECTION,
+    SCORECARD_BOOTSTRAP,
     SCORECARD_DAYS,
     SCORECARD_DETERMINISTIC_DRAWS,
     SCORECARD_INIT_HOUR,
+    SCORECARD_LEAD_GROUPS,
     SCORECARD_LEAD_STEP_HOURS,
     SCORECARD_MAX_LEAD_HOURS,
     SCORECARD_MIN_INITS,
+    SCORECARD_MODES,
     SCORECARD_OBS_GRACE_HOURS,
     SCORECARD_OBS_RECENT_DAYS,
     SCORECARD_PERIODS,
@@ -659,6 +662,8 @@ def pair_scores(
 # --- aggregation -------------------------------------------------------------------
 
 SCORE_COLUMNS: list[str] = list(SCORE_DIRECTION)
+# Lead days of the station map and the rank histograms.
+STATION_LEAD_DAYS: tuple[int, ...] = (1, 3, 5, 10)
 _COUNT_COLUMNS: list[str] = ["n", "n_inits", "n_stations", "low_n"]
 
 
@@ -719,6 +724,243 @@ def _keep_common_inits(rows: pd.DataFrame) -> pd.DataFrame:
     return rows[keys.isin(common.index)]
 
 
+def mode_columns(variable: str, mode: str) -> dict[str, str | bool]:
+    """Pair columns a display mode reads for one variable.
+
+    Parameters
+    ----------
+    variable : str
+        `SCORECARD_VARIABLES` key.
+    mode : str
+        One of `SCORECARD_MODES`.
+
+    Returns
+    -------
+    dict
+        `err`, `crps`, `spread2`, `brier` (headline threshold), `rank`,
+        `n_members`, the templates `p` / `brier_t` (format with `k=` a
+        `threshold_key`), and `applied`: False when the variable has no such
+        mode and its raw columns stand in (height correction is 2 m temperature
+        only; Z500 has no representativeness model).
+
+    Notes
+    -----
+    Height-corrected: `err_hc` / `crps_hc`; the spread, ranks and
+    probabilities stay raw (a uniform shift of the members does not change
+    them, and no shifted rank is stored). Representativeness: the TM865
+    perturbed ensemble for every part, with M = `n_members_pert`. The
+    contingency flags (`wet_fc*`) are always the raw ensemble mean's.
+    """
+    if mode not in SCORECARD_MODES:
+        raise ValueError(f"Unknown scorecard mode {mode!r}")
+    cols: dict[str, str | bool] = {
+        "err": "err",
+        "crps": "crps",
+        "spread2": "spread2",
+        "brier": "brier",
+        "rank": "rank",
+        "n_members": "n_members",
+        "p": "p_{k}",
+        "brier_t": "brier_{k}",
+        "applied": mode == "raw",
+    }
+    if mode == "height_corrected" and variable == "temperature_2m":
+        cols.update(err="err_hc", crps="crps_hc", applied=True)
+    elif mode == "representativeness" and variable in obs_uncertainty.VARIABLES:
+        headline = SCORECARD_VARIABLES.get(variable, {}).get("threshold")
+        cols.update(
+            err="err_pert",
+            crps="crps_pert",
+            spread2="spread2_pert",
+            brier=(
+                f"brier_pert_{threshold_key(headline)}"
+                if headline is not None
+                else "brier"
+            ),
+            rank="rank_pert",
+            n_members="n_members_pert",
+            p="p_pert_{k}",
+            brier_t="brier_pert_{k}",
+            applied=True,
+        )
+    return cols
+
+
+def _store_members(store: str, perturbed: bool) -> float:
+    """Member count of a store when a row file lacks it (older row versions)."""
+    m = float(GRID_STORES.get(store, {}).get("members", 1))
+    return float(SCORECARD_DETERMINISTIC_DRAWS) if perturbed and m <= 1 else m
+
+
+def _prepare(rows: pd.DataFrame, mode: str) -> pd.DataFrame:
+    """Scored leads of `rows` with the mode's generic parts and the bias offset.
+
+    Drops T+0 and leads off `SCORECARD_LEAD_STEP_HOURS` (R23), adds
+    `lead_day`, and per variable the `mode_columns` as `_e`, `_se`, `_ae`,
+    `_crps`, `_sp2`, `_brier`, `_rank`, `_m`, `_applied`, `_p_{k}`,
+    `_brier_{k}`, the persistence error `_pe` (obs_persist - obs, never
+    perturbed), and `_e_bc` / `_se_bc` / `_ae_bc` from each (store, station,
+    variable) mean of `_e` over every row passed (the window, not the period).
+    """
+    missing = [c for c in PAIR_COLUMNS if c not in rows]
+    if missing:
+        rows = rows.assign(**{c: np.nan for c in missing})
+    lead = rows["lead_hours"].to_numpy(dtype=float)
+    on_step = np.isclose(np.mod(lead, SCORECARD_LEAD_STEP_HOURS), 0.0)
+    rows = rows[(lead > 0) & on_step]
+    keys = [threshold_key(t) for t in _THRESHOLDS]
+    parts = []
+    for variable, g in rows.groupby("variable", sort=False):
+        cols = mode_columns(str(variable), mode)
+
+        def col(name: str, g: pd.DataFrame = g) -> np.ndarray:
+            return g[name].to_numpy(dtype=float)
+
+        e = col(cols["err"])
+        raw_err = cols["err"] == "err"
+        m = col(cols["n_members"])
+        no_m = ~np.isfinite(m)
+        if no_m.any():
+            perturbed = cols["n_members"] == "n_members_pert"
+            fill = g["store"].map(lambda s, p=perturbed: _store_members(s, p))
+            m = np.where(no_m, fill.to_numpy(dtype=float), m)
+        add = {
+            "_e": e,
+            "_se": col("se") if raw_err else e**2,
+            "_ae": col("ae") if raw_err else np.abs(e),
+            "_crps": col(cols["crps"]),
+            "_sp2": col(cols["spread2"]),
+            "_brier": col(cols["brier"]),
+            "_rank": col(cols["rank"]),
+            "_m": m,
+            "_applied": bool(cols["applied"]),
+            "_pe": col("obs_persist") - col("obs"),
+        }
+        for k in keys:
+            add[f"_p_{k}"] = col(str(cols["p"]).format(k=k))
+            add[f"_brier_{k}"] = col(str(cols["brier_t"]).format(k=k))
+        parts.append(g.assign(**add))
+    if parts:
+        rows = pd.concat(parts)
+    else:
+        extra = ["_e", "_se", "_ae", "_crps", "_sp2", "_brier", "_rank", "_m", "_pe"]
+        extra += [f"_{p}_{k}" for k in keys for p in ("p", "brier")]
+        rows = rows.assign(**{c: np.nan for c in extra}, _applied=False)
+    rows["lead_day"] = np.ceil(rows["lead_hours"].to_numpy(dtype=float) / 24.0).astype(
+        int
+    )
+    offset = rows.groupby(["store", "station", "variable"])["_e"].transform("mean")
+    rows["_e_bc"] = rows["_e"] - offset
+    rows["_se_bc"] = rows["_e_bc"] ** 2
+    rows["_ae_bc"] = rows["_e_bc"].abs()
+    return rows
+
+
+def _scored_rows(
+    rows: pd.DataFrame,
+    period_days: int,
+    mode: str,
+    end: pd.Timestamp | None,
+    common_inits: bool = True,
+) -> pd.DataFrame:
+    """`_prepare`, then the period cut and (optionally) the common-init filter."""
+    rows = _prepare(rows, mode)
+    if not rows.empty:
+        rows = _select_period(rows, period_days, end)
+    if common_inits and not rows.empty:
+        rows = _keep_common_inits(rows)
+    # A pair the mode cannot score (height correction without an elevation, a
+    # row version without the perturbed columns) is not a pair of this mode.
+    return rows[np.isfinite(rows["_e"].to_numpy(dtype=float))]
+
+
+def _lead_group(lead_day: pd.Series) -> pd.Series:
+    """`SCORECARD_LEAD_GROUPS` label ("1-3", "4-7", "8-15") of each lead day."""
+    out = pd.Series(pd.NA, index=lead_day.index, dtype="string")
+    for lo, hi in SCORECARD_LEAD_GROUPS:
+        out[lead_day.between(lo, hi)] = f"{lo}-{hi}"
+    return out
+
+
+def _contingency_counts(
+    rows: pd.DataFrame, fc: str, obs: str, prefix: str = ""
+) -> pd.DataFrame:
+    """Add hit / miss / false-alarm / correct-negative parts of two flag columns."""
+    has = rows[fc].notna() & rows[obs].notna()
+    wf = rows[fc].where(has)
+    wo = rows[obs].where(has)
+    return rows.assign(
+        **{
+            f"{prefix}h": wf * wo,
+            f"{prefix}m": (1.0 - wf) * wo,
+            f"{prefix}f": wf * (1.0 - wo),
+            f"{prefix}cn": (1.0 - wf) * (1.0 - wo),
+        }
+    )
+
+
+def _roc_table(rows: pd.DataFrame, keys: list[str], k: str) -> pd.DataFrame:
+    """ROC points of every group at the member-fraction thresholds p >= j/M.
+
+    Parameters
+    ----------
+    rows : pandas.DataFrame
+        From `_prepare` (carries `_p_{k}`, `_m` and `wet_obs_{k}`).
+    keys : list of str
+        Group keys.
+    k : str
+        `threshold_key` of the event threshold.
+
+    Returns
+    -------
+    pandas.DataFrame
+        `keys`, `j` (0..M+1), `prob_threshold` (j/M), `pod`, `pofd`, `area`
+        and `n`. j = 0 is (1, 1) and j = M + 1 is (0, 0); the area is the
+        trapezoid through every point. Only rows of ensembles (M > 1) enter:
+        a deterministic store has no ROC curve except as a perturbed ensemble.
+        A group without both events and non-events has NaN POD/POFD/area.
+    """
+    cols = [*keys, "j", "prob_threshold", "pod", "pofd", "area", "n"]
+    p = rows[f"_p_{k}"].to_numpy(dtype=float)
+    o = rows[f"wet_obs_{k}"].to_numpy(dtype=float)
+    m = rows["_m"].to_numpy(dtype=float)
+    ok = np.isfinite(p) & np.isfinite(o) & np.isfinite(m) & (m > 1)
+    if not ok.any():
+        return pd.DataFrame(columns=cols)
+    sub = rows.loc[ok, keys]
+    gid = sub.groupby(keys, sort=True).ngroup().to_numpy()
+    groups = sub.groupby(keys, sort=True).size().index.to_frame(index=False)
+    n_g = int(gid.max()) + 1
+    m_ok = m[ok].astype(int)
+    count = np.rint(p[ok] * m[ok]).astype(int)
+    event = o[ok] > 0.5
+    width = int(m_ok.max()) + 2
+    ev = np.zeros((n_g, width))
+    ne = np.zeros((n_g, width))
+    np.add.at(ev, (gid[event], count[event]), 1.0)
+    np.add.at(ne, (gid[~event], count[~event]), 1.0)
+    # hits(j) = events with count >= j: reverse cumulative sum over counts.
+    hits = np.cumsum(ev[:, ::-1], axis=1)[:, ::-1]
+    fas = np.cumsum(ne[:, ::-1], axis=1)[:, ::-1]
+    n_ev, n_ne = hits[:, :1], fas[:, :1]
+    pod = _div(hits, np.broadcast_to(n_ev, hits.shape))
+    pofd = _div(fas, np.broadcast_to(n_ne, fas.shape))
+    area = 0.5 * np.sum((pofd[:, :-1] - pofd[:, 1:]) * (pod[:, :-1] + pod[:, 1:]), 1)
+    m_g = np.zeros(n_g, dtype=int)
+    np.maximum.at(m_g, gid, m_ok)
+    jj = np.arange(width)
+    keep = jj[None, :] <= (m_g[:, None] + 1)
+    g_idx, j_idx = np.nonzero(keep)
+    out = groups.iloc[g_idx].reset_index(drop=True)
+    out["j"] = j_idx
+    out["prob_threshold"] = j_idx / m_g[g_idx]
+    out["pod"] = pod[g_idx, j_idx]
+    out["pofd"] = pofd[g_idx, j_idx]
+    out["area"] = area[g_idx]
+    out["n"] = (n_ev[:, 0] + n_ne[:, 0])[g_idx].astype(int)
+    return out[cols]
+
+
 def aggregate(
     rows: pd.DataFrame,
     period_days: int,
@@ -727,6 +969,7 @@ def aggregate(
     end: pd.Timestamp | None = None,
     common_inits: bool = True,
     min_n: int = 50,
+    mode: str = "raw",
 ) -> pd.DataFrame:
     """Scorecard scores per group from per-pair rows.
 
@@ -755,18 +998,23 @@ def aggregate(
     min_n : int
         Groups with fewer pairs, or resting on fewer than
         `SCORECARD_MIN_INITS` runs (R24), are flagged `low_n`.
+    mode : str
+        One of `SCORECARD_MODES`: which error, CRPS, spread, Brier and
+        probability columns are read (`mode_columns`). `mode_applied` is False
+        for a variable the mode does not apply to (its raw scores are given).
 
     Returns
     -------
     pandas.DataFrame
         One row per group: `variable`, the `by` keys, `n` (pairs), `n_inits`,
-        `n_stations`, `low_n`, and every column of `SCORE_COLUMNS`; a score the
-        variable does not offer (`SCORECARD_VARIABLES[...]["scores"]`) or that
+        `n_stations`, `low_n`, `mode_applied`, and every column of
+        `SCORE_COLUMNS`; a score the variable does not offer
+        (`SCORECARD_VARIABLES[...]["scores"]` and `["extra_scores"]`) or that
         is undefined (zero denominator, deterministic spread or Brier) is NaN.
 
     Notes
     -----
-    Pass the whole 90-day window as `rows`: with only a period's rows the bias
+    Pass the whole window as `rows`: with only a period's rows the bias
     correction (`rmse_bc`, `mae_bc`) uses that period's mean error.
 
     Scores are computed over all pairs of a group, each pair weighted equally:
@@ -774,90 +1022,487 @@ def aggregate(
     pairs, which are near-equal in number per init. RMSE is √(mean se), not a
     mean of per-init RMSEs. `brier` is the mean fair Brier score (per pair it
     may be slightly negative). `rmse_bc`/`mae_bc` subtract each (store,
-    station, variable) mean error over **all rows passed in** (the full
-    90-day window, not just the period; T+0 excluded), so a 7-day card corrects with the
-    same stable station offset as the 90-day one. `spread_skill` is
-    √((M+1)/M · mean spread2) / RMSE with M the store's member count
-    (`GRID_STORES`), ideal 1; NaN for one member. ETS, HSS and frequency bias
-    come from the group's summed contingency counts (`contingency_scores`).
+    station, variable) mean of the mode's error over **all rows passed in**
+    (T+0 excluded), so a 7-day card corrects with the same stable station
+    offset as the 14-day one.
+
+    `error_sd` = √max(mse − bias², 0). `spread_skill` = √(mean (M+1)/M ·
+    spread2) / RMSE and `spread_error` the same over `error_sd` (TM865 slide
+    19), with M per row `n_members` (or `n_members_pert` when perturbed),
+    ideal 1; NaN for one member. Persistence (`obs_persist`, never perturbed):
+    `rmse_ss_persist` = 1 − mse / mse_persist and `crpss_persist` = 1 − crps /
+    mae_persist (a deterministic forecast's CRPS is its MAE), both over the
+    pairs that have a persistence observation only.
+
+    ETS, HSS, frequency bias, POD and FAR come from the group's summed
+    contingency counts (`contingency_scores`) at the headline threshold, and
+    `ets_{t}`, `fbi_{t}`, `pod_{t}`, `far_{t}` per threshold, with `brier_{t}`
+    the mean fair Brier and `roc_area_{t}` the trapezoid area of `_roc_table`
+    (ensembles, or perturbed ensembles, only).
     """
     by = tuple(by)
     keys = ["variable", *[k for k in by if k != "variable"]]
-    # R23: one valid-hour set per bin for every store (hourly GFS/ICON-EU,
-    # 3-hourly IFS ENS/GEFS, 6-hourly AIFS), before the bias offset.
-    lead = rows["lead_hours"].to_numpy(dtype=float)
-    on_step = np.isclose(np.mod(lead, SCORECARD_LEAD_STEP_HOURS), 0.0)
-    rows = rows[(lead > 0) & on_step].copy()
-    rows["lead_day"] = np.ceil(rows["lead_hours"].to_numpy(dtype=float) / 24.0).astype(
-        int
+    out_cols = [*keys, *_COUNT_COLUMNS, "mode_applied", *SCORE_COLUMNS]
+    rows = _scored_rows(rows, period_days, mode, end, common_inits)
+    if rows.empty:
+        return pd.DataFrame(columns=out_cols)
+
+    tkeys = [threshold_key(t) for t in _THRESHOLDS]
+    rows = _contingency_counts(rows, "wet_fc", "wet_obs")
+    for k in tkeys:
+        rows = _contingency_counts(rows, f"wet_fc_{k}", f"wet_obs_{k}", f"t{k}_")
+    m = rows["_m"].to_numpy(dtype=float)
+    ens = m > 1
+    factor = np.where(ens, (m + 1.0) / np.where(ens, m, 1.0), np.nan)
+    pe = rows["_pe"].to_numpy(dtype=float)
+    paired = np.isfinite(pe) & np.isfinite(rows["_e"].to_numpy(dtype=float))
+    paired_crps = np.isfinite(pe) & np.isfinite(rows["_crps"].to_numpy(dtype=float))
+    rows = rows.assign(
+        _fsp=factor * rows["_sp2"].to_numpy(dtype=float),
+        _se_pp=rows["_se"].where(paired),
+        _sep=pd.Series(pe**2, index=rows.index).where(paired),
+        _crps_pp=rows["_crps"].where(paired_crps),
+        _aep=pd.Series(np.abs(pe), index=rows.index).where(paired_crps),
     )
 
-    offset = rows.groupby(["store", "station", "variable"])["err"].transform("mean")
-    rows["err_bc"] = rows["err"] - offset
-    rows["se_bc"] = rows["err_bc"] ** 2
-    rows["ae_bc"] = rows["err_bc"].abs()
-
-    if not rows.empty:
-        rows = _select_period(rows, period_days, end)
-    if common_inits and not rows.empty:
-        rows = _keep_common_inits(rows)
-    if rows.empty:
-        return pd.DataFrame(columns=[*keys, *_COUNT_COLUMNS, *SCORE_COLUMNS])
-
-    has_cat = rows["wet_fc"].notna() & rows["wet_obs"].notna()
-    wf = rows["wet_fc"].where(has_cat)
-    wo = rows["wet_obs"].where(has_cat)
-    rows["h"] = wf * wo
-    rows["m"] = (1.0 - wf) * wo
-    rows["f"] = wf * (1.0 - wo)
-    rows["cn"] = (1.0 - wf) * (1.0 - wo)
-
+    spec = {
+        "n": ("_e", "count"),
+        "n_inits": ("init", "nunique"),
+        "n_stations": ("station", "nunique"),
+        "mode_applied": ("_applied", "all"),
+        "se": ("_se", "mean"),
+        "mae": ("_ae", "mean"),
+        "bias": ("_e", "mean"),
+        "crps": ("_crps", "mean"),
+        "brier": ("_brier", "mean"),
+        "se_bc": ("_se_bc", "mean"),
+        "mae_bc": ("_ae_bc", "mean"),
+        "fsp": ("_fsp", "mean"),
+        "se_pp": ("_se_pp", "mean"),
+        "sep": ("_sep", "mean"),
+        "crps_pp": ("_crps_pp", "mean"),
+        "aep": ("_aep", "mean"),
+        "h": ("h", "sum"),
+        "m": ("m", "sum"),
+        "f": ("f", "sum"),
+        "cn": ("cn", "sum"),
+        "n_cat": ("h", "count"),
+    }
+    for k in tkeys:
+        spec[f"brier_{k}"] = (f"_brier_{k}", "mean")
+        for part in ("h", "m", "f", "cn"):
+            spec[f"t{k}_{part}"] = (f"t{k}_{part}", "sum")
+        spec[f"t{k}_n_cat"] = (f"t{k}_h", "count")
     # pandas' groupby mean/sum skip NaN and give NaN for an all-NaN group, no warning.
-    g = rows.groupby(keys, sort=True)
-    out = g.agg(
-        n=("err", "size"),
-        n_inits=("init", "nunique"),
-        n_stations=("station", "nunique"),
-        se=("se", "mean"),
-        mae=("ae", "mean"),
-        bias=("err", "mean"),
-        crps=("crps", "mean"),
-        brier=("brier", "mean"),
-        se_bc=("se_bc", "mean"),
-        mae_bc=("ae_bc", "mean"),
-        spread2=("spread2", "mean"),
-        h=("h", "sum"),
-        m=("m", "sum"),
-        f=("f", "sum"),
-        cn=("cn", "sum"),
-        n_cat=("h", "count"),
-    ).reset_index()
+    out = rows.groupby(keys, sort=True).agg(**spec).reset_index()
 
     out["rmse"] = np.sqrt(out["se"])
     out["rmse_bc"] = np.sqrt(out["se_bc"])
-    if "store" in out:
-        members = out["store"].map(lambda s: GRID_STORES.get(s, {}).get("members", 1))
-    else:
-        members = pd.Series(1, index=out.index)
-    members = members.to_numpy(dtype=float)
-    ens = members > 1
-    factor = np.where(ens, (members + 1.0) / np.where(ens, members, 1.0), np.nan)
-    out["spread_skill"] = _div(np.sqrt(factor * out["spread2"].to_numpy()), out["rmse"])
+    bias2 = out["bias"].to_numpy(dtype=float) ** 2
+    out["error_sd"] = np.sqrt(np.maximum(out["se"].to_numpy(dtype=float) - bias2, 0.0))
+    spread = np.sqrt(out["fsp"].to_numpy(dtype=float))
+    out["spread_skill"] = _div(spread, out["rmse"])
+    out["spread_error"] = _div(spread, out["error_sd"])
+    out["rmse_ss_persist"] = 1.0 - _div(out["se_pp"], out["sep"])
+    out["crpss_persist"] = 1.0 - _div(out["crps_pp"], out["aep"])
 
     cat = contingency_scores(out["h"], out["m"], out["f"], out["cn"])
     no_cat = out["n_cat"].to_numpy() == 0
     for name, values in cat.items():
         out[name] = np.where(no_cat, np.nan, values)
+    for k in tkeys:
+        cat = contingency_scores(*(out[f"t{k}_{p}"] for p in ("h", "m", "f", "cn")))
+        no_cat = out[f"t{k}_n_cat"].to_numpy() == 0
+        for name, short in (
+            ("ets", "ets"),
+            ("frequency_bias", "fbi"),
+            ("pod", "pod"),
+            ("far", "far"),
+        ):
+            out[f"{short}_{k}"] = np.where(no_cat, np.nan, cat[name])
+        roc = _roc_table(rows, keys, k)
+        area = roc.drop_duplicates(keys)[[*keys, "area"]]
+        out = out.merge(
+            area.rename(columns={"area": f"roc_area_{k}"}), on=keys, how="left"
+        )
 
     offered = out["variable"].map(
-        lambda v: set(SCORECARD_VARIABLES.get(v, {}).get("scores", ()))
+        lambda v: {
+            *SCORECARD_VARIABLES.get(v, {}).get("scores", ()),
+            *SCORECARD_VARIABLES.get(v, {}).get("extra_scores", ()),
+        }
     )
     for score in SCORE_COLUMNS:
         mask = offered.map(lambda s, score=score: score in s).to_numpy(dtype=bool)
+        if score not in out:
+            out[score] = np.nan
         out[score] = out[score].where(mask)
 
     out["low_n"] = (out["n"] < min_n) | (out["n_inits"] < SCORECARD_MIN_INITS)
-    return out[[*keys, *_COUNT_COLUMNS, *SCORE_COLUMNS]]
+    return out[out_cols]
+
+
+# Per-pair parts the bootstrap can test, and whether the difference is
+# reported on the root (RMSE) scale of a mean square (Ruling V3).
+_SIGNIFICANCE_PARTS: dict[str, tuple[str, bool]] = {
+    "rmse": ("_se", True),
+    "rmse_bc": ("_se_bc", True),
+    "mae": ("_ae", False),
+    "mae_bc": ("_ae_bc", False),
+    "crps": ("_crps", False),
+    "brier": ("_brier", False),
+    **{
+        f"brier_{threshold_key(t)}": (f"_brier_{threshold_key(t)}", False)
+        for t in _THRESHOLDS
+    },
+}
+SIGNIFICANCE_SCORES: tuple[str, ...] = tuple(_SIGNIFICANCE_PARTS)
+
+
+@functools.lru_cache(maxsize=64)
+def _block_indices(n: int, resamples: int, block: int) -> np.ndarray:
+    """Circular moving-block resamples of 0..n-1, shape (resamples, n).
+
+    Seeded from `SCORECARD_RNG_SEED` and n only, so every store and lead with
+    the same number of runs is resampled with the same blocks (common random
+    numbers), whatever the row order.
+    """
+    rng = np.random.default_rng([SCORECARD_RNG_SEED, n, block])
+    n_blocks = -(-n // block)
+    starts = rng.integers(0, n, size=(resamples, n_blocks))
+    idx = (starts[:, :, None] + np.arange(block)) % n
+    idx = idx.reshape(resamples, n_blocks * block)[:, :n]
+    idx.setflags(write=False)
+    return idx
+
+
+def significance(
+    rows: pd.DataFrame,
+    baseline: str = "ifs_ens",
+    score: str = "rmse",
+    period_days: int = SCORECARD_DAYS,
+    mode: str = "raw",
+    *,
+    end: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Paired moving-block bootstrap of each store's score difference to a baseline.
+
+    Parameters
+    ----------
+    rows : pandas.DataFrame
+        Pair rows as for `aggregate` (the whole window: the bias-corrected
+        scores use its station offsets).
+    baseline : str
+        Reference store.
+    score : str
+        One of `SIGNIFICANCE_SCORES` (scores that are means of per-pair parts).
+    period_days : int
+        As in `aggregate`; the common-init filter is applied the same way.
+    mode : str
+        One of `SCORECARD_MODES`.
+    end : pandas.Timestamp, optional
+        Last init date of the period.
+
+    Returns
+    -------
+    pandas.DataFrame
+        `variable`, `store`, `lead_day`, `n_inits` (common runs), `diff`
+        (store minus baseline, in the score's unit), `lo`, `hi` (percentile
+        interval at `SCORECARD_BOOTSTRAP["level"]`) and `sig` (1.0 when
+        `lo > 0` or `hi < 0`, else 0.0). With fewer than `SCORECARD_MIN_INITS`
+        common runs `lo`, `hi` and `sig` are NaN ("not assessed", never "not
+        significant"); the baseline's own row has `diff` 0 and NaN `sig`.
+
+    Notes
+    -----
+    Pairs are matched on (init, station, lead_hours) and kept only where both
+    parts are finite. Each init contributes its summed part and pair count;
+    a resample draws circular blocks of `block_days` consecutive inits
+    (sorted) and pools their sums, so each pair keeps equal weight as in
+    `aggregate`. RMSE and bias-corrected RMSE test the paired MSE and report
+    √mse_store − √mse_base of each resample's pooled means (Ruling V3).
+    """
+    if score not in _SIGNIFICANCE_PARTS:
+        raise ValueError(f"No significance test for {score!r}")
+    part, root = _SIGNIFICANCE_PARTS[score]
+    cols = ["variable", "store", "lead_day", "n_inits", "diff", "lo", "hi", "sig"]
+    rows = _scored_rows(rows, period_days, mode, end)
+    if rows.empty or not (rows["store"] == baseline).any():
+        return pd.DataFrame(columns=cols)
+    on = ["variable", "init", "station", "lead_hours"]
+    sub = rows[[*on, "store", "lead_day", part]]
+    sub = sub[np.isfinite(sub[part].to_numpy(dtype=float))]
+    base = sub.loc[sub["store"] == baseline, [*on, part]]
+    pairs = sub.merge(base, on=on, suffixes=("", "_base"))
+    per_init = (
+        pairs.assign(_x=pairs[part], _b=pairs[f"{part}_base"])
+        .groupby(["variable", "store", "lead_day", "init"], sort=True)
+        .agg(x=("_x", "sum"), b=("_b", "sum"), n=("_x", "size"))
+        .reset_index()
+    )
+    boot = SCORECARD_BOOTSTRAP
+    tail = 100.0 * (1.0 - boot["level"]) / 2.0
+    out = []
+    for (variable, store, lead_day), g in per_init.groupby(
+        ["variable", "store", "lead_day"], sort=True
+    ):
+        x, b, n = (g[c].to_numpy(dtype=float) for c in ("x", "b", "n"))
+        n_inits = x.size
+        stat = (lambda s: np.sqrt(s)) if root else (lambda s: s)
+        diff = float(stat(x.sum() / n.sum()) - stat(b.sum() / n.sum()))
+        lo = hi = sig = np.nan
+        if store == baseline:
+            diff = 0.0
+        elif n_inits >= SCORECARD_MIN_INITS:
+            idx = _block_indices(n_inits, boot["resamples"], boot["block_days"])
+            nn = n[idx].sum(axis=1)
+            d = stat(x[idx].sum(axis=1) / nn) - stat(b[idx].sum(axis=1) / nn)
+            lo, hi = np.percentile(d, [tail, 100.0 - tail])
+            sig = float(lo > 0 or hi < 0)
+        out.append((variable, store, int(lead_day), n_inits, diff, lo, hi, sig))
+    return pd.DataFrame(out, columns=cols)
+
+
+def rank_bin_weights(m: int, bins: int = 10) -> np.ndarray:
+    """Share of each integer rank 0..m falling in each of `bins` equal bins.
+
+    The normalised rank of r is the interval [r, r + 1) / (m + 1), centred on
+    (r + 0.5)/(m + 1); its unit mass is split over the bins it overlaps.
+    Exchangeable ranks (each of the m + 1 values equally likely) then give
+    exactly 1/bins per bin for any m, including m + 1 not a multiple of
+    `bins` (51 ranks for 50 members), which whole-rank binning cannot.
+    Shape (m + 1, bins); each row sums to 1.
+    """
+    lo = np.arange(m + 1)[:, None] / (m + 1)
+    hi = lo + 1.0 / (m + 1)
+    edges = np.arange(bins + 1) / bins
+    overlap = np.clip(
+        np.minimum(hi, edges[None, 1:]) - np.maximum(lo, edges[None, :-1]), 0.0, None
+    )
+    return overlap * (m + 1)
+
+
+def rank_histogram(
+    rows: pd.DataFrame,
+    period_days: int,
+    lead_days: tuple[int, ...] = STATION_LEAD_DAYS,
+    mode: str = "raw",
+    *,
+    end: pd.Timestamp | None = None,
+    bins: int = 10,
+) -> pd.DataFrame:
+    """Rank histogram per store and lead day, in `bins` bins of rank / (M + 1).
+
+    Parameters
+    ----------
+    rows : pandas.DataFrame
+        Pair rows as for `aggregate`.
+    period_days : int
+        As in `aggregate` (common inits).
+    lead_days : tuple of int
+        Lead days kept (`STATION_LEAD_DAYS` by default).
+    mode : str
+        `rank` / `n_members`, or `rank_pert` / `n_members_pert` when perturbed
+        (`mode_columns`; a deterministic store has ranks only then).
+    end : pandas.Timestamp, optional
+        Last init date of the period.
+    bins : int
+        Number of bins.
+
+    Returns
+    -------
+    pandas.DataFrame
+        `variable`, `store`, `lead_day`, `bin` (0..bins-1), `count` (fractional,
+        `rank_bin_weights`), `n` (ranks), `freq` (count / n, flat = 1/bins),
+        `n_inits`, `mode_applied`.
+    """
+    cols = ["variable", "store", "lead_day", "bin", "count", "n", "freq"]
+    cols += ["n_inits", "mode_applied"]
+    rows = _scored_rows(rows, period_days, mode, end)
+    if rows.empty:
+        return pd.DataFrame(columns=cols)
+    r = rows["_rank"].to_numpy(dtype=float)
+    m = rows["_m"].to_numpy(dtype=float)
+    ok = np.isfinite(r) & np.isfinite(m) & (m > 1)
+    ok &= rows["lead_day"].isin(lead_days).to_numpy()
+    rows, r, m = rows[ok], r[ok], m[ok].astype(int)
+    if rows.empty:
+        return pd.DataFrame(columns=cols)
+    weights = np.zeros((len(rows), bins))
+    for mm in np.unique(m):
+        sel = m == mm
+        rank = np.clip(np.rint(r[sel]).astype(int), 0, mm)
+        weights[sel] = rank_bin_weights(int(mm), bins)[rank]
+    keys = ["variable", "store", "lead_day"]
+    w = pd.DataFrame(weights, index=rows.index, columns=range(bins))
+    frame = pd.concat([rows[[*keys, "init", "_applied"]], w], axis=1)
+    g = frame.groupby(keys, sort=True)
+    counts = g[list(range(bins))].sum()
+    info = g.agg(
+        n=("init", "size"),
+        n_inits=("init", "nunique"),
+        mode_applied=("_applied", "all"),
+    )
+    long = counts.stack().rename("count").reset_index()
+    long = long.rename(columns={f"level_{len(keys)}": "bin"})
+    long = long.merge(info.reset_index(), on=keys)
+    long["freq"] = long["count"] / long["n"]
+    return long[cols]
+
+
+def reliability(
+    rows: pd.DataFrame,
+    period_days: int,
+    threshold: float,
+    mode: str = "raw",
+    *,
+    end: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Reliability table per store and lead-day group at one event threshold.
+
+    Parameters
+    ----------
+    rows : pandas.DataFrame
+        Pair rows as for `aggregate`.
+    period_days : int
+        As in `aggregate` (common inits).
+    threshold : float
+        One of the variable's `thresholds` (columns `p_{t}` / `wet_obs_{t}`).
+    mode : str
+        `p_{t}`, or `p_pert_{t}` when perturbed. A deterministic store enters
+        only as a perturbed ensemble.
+    end : pandas.Timestamp, optional
+        Last init date of the period.
+
+    Returns
+    -------
+    pandas.DataFrame
+        `variable`, `store`, `lead_group` (`SCORECARD_LEAD_GROUPS`), `bin`
+        (0..9: [0, 0.1), …, [0.9, 1.0], the last closed), `bin_lo`, `bin_hi`,
+        `p_mean` (mean forecast probability), `obs_freq` (observed relative
+        frequency), `count`, `n_inits`, `mode_applied`. Empty bins have no row.
+    """
+    k = threshold_key(threshold)
+    cols = ["variable", "store", "lead_group", "bin", "bin_lo", "bin_hi", "p_mean"]
+    cols += ["obs_freq", "count", "n_inits", "mode_applied"]
+    rows = _scored_rows(rows, period_days, mode, end)
+    if rows.empty:
+        return pd.DataFrame(columns=cols)
+    p = rows[f"_p_{k}"].to_numpy(dtype=float)
+    o = rows[f"wet_obs_{k}"].to_numpy(dtype=float)
+    m = rows["_m"].to_numpy(dtype=float)
+    group = _lead_group(rows["lead_day"])
+    ok = np.isfinite(p) & np.isfinite(o) & (m > 1) & group.notna().to_numpy()
+    if not ok.any():
+        return pd.DataFrame(columns=cols)
+    # 1e-9: p = j/M times 10 can land a hair under an integer (0.7 * 10).
+    b = np.minimum(np.floor(p[ok] * 10.0 + 1e-9), 9).astype(int)
+    frame = rows.loc[ok, ["variable", "store", "init", "_applied"]].assign(
+        lead_group=group[ok], bin=b, _p=p[ok], _o=o[ok]
+    )
+    out = (
+        frame.groupby(["variable", "store", "lead_group", "bin"], sort=True)
+        .agg(
+            p_mean=("_p", "mean"),
+            obs_freq=("_o", "mean"),
+            count=("_p", "size"),
+            n_inits=("init", "nunique"),
+            mode_applied=("_applied", "all"),
+        )
+        .reset_index()
+    )
+    out["bin_lo"] = out["bin"] / 10.0
+    out["bin_hi"] = (out["bin"] + 1) / 10.0
+    return out[cols]
+
+
+def roc(
+    rows: pd.DataFrame,
+    period_days: int,
+    threshold: float,
+    mode: str = "raw",
+    *,
+    end: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """ROC points (POD, POFD) at p >= j/M per store and lead-day group.
+
+    Same inputs as `reliability`. Returns `variable`, `store`, `lead_group`,
+    `j`, `prob_threshold`, `pod`, `pofd`, `area` (trapezoid including (0, 0)
+    and (1, 1)), `n`, `mode_applied`; empty for a deterministic store in raw
+    mode.
+    """
+    k = threshold_key(threshold)
+    keys = ["variable", "store", "lead_group"]
+    cols = [*keys, "j", "prob_threshold", "pod", "pofd", "area", "n", "mode_applied"]
+    rows = _scored_rows(rows, period_days, mode, end)
+    if rows.empty:
+        return pd.DataFrame(columns=cols)
+    rows = rows.assign(lead_group=_lead_group(rows["lead_day"]))
+    rows = rows[rows["lead_group"].notna()]
+    table = _roc_table(rows, keys, k)
+    if table.empty:
+        return pd.DataFrame(columns=cols)
+    applied = rows.groupby(keys)["_applied"].all().rename("mode_applied")
+    return table.merge(applied.reset_index(), on=keys)[cols]
+
+
+def diurnal(
+    rows: pd.DataFrame,
+    period_days: int,
+    mode: str = "raw",
+    *,
+    end: pd.Timestamp | None = None,
+    min_n: int = 50,
+) -> pd.DataFrame:
+    """Bias and error SD per store, valid hour and lead-day group.
+
+    Parameters
+    ----------
+    rows : pandas.DataFrame
+        Pair rows as for `aggregate`.
+    period_days : int
+        As in `aggregate` (common inits).
+    mode : str
+        One of `SCORECARD_MODES` (the error column read).
+    end : pandas.Timestamp, optional
+        Last init date of the period.
+    min_n : int
+        As in `aggregate`, for `low_n`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        `variable`, `store`, `lead_group`, `valid_hour` (UTC hour of init +
+        lead: 00/06/12/18 for 00 UTC runs), `n`, `n_inits`, `low_n`,
+        `mode_applied`, `bias`, `rmse`, `error_sd`.
+    """
+    keys = ["variable", "store", "lead_group", "valid_hour"]
+    cols = [*keys, *_COUNT_COLUMNS[:2], "low_n", "mode_applied", "bias", "rmse"]
+    cols.append("error_sd")
+    rows = _scored_rows(rows, period_days, mode, end)
+    if rows.empty:
+        return pd.DataFrame(columns=cols)
+    valid = rows["init"] + pd.to_timedelta(rows["lead_hours"], unit="h")
+    rows = rows.assign(
+        lead_group=_lead_group(rows["lead_day"]), valid_hour=valid.dt.hour
+    )
+    rows = rows[rows["lead_group"].notna()]
+    out = (
+        rows.groupby(keys, sort=True)
+        .agg(
+            n=("_e", "count"),
+            n_inits=("init", "nunique"),
+            mode_applied=("_applied", "all"),
+            bias=("_e", "mean"),
+            se=("_se", "mean"),
+        )
+        .reset_index()
+    )
+    out["rmse"] = np.sqrt(out["se"])
+    var = out["se"].to_numpy(dtype=float) - out["bias"].to_numpy(dtype=float) ** 2
+    out["error_sd"] = np.sqrt(np.maximum(var, 0.0))
+    out["low_n"] = (out["n"] < min_n) | (out["n_inits"] < SCORECARD_MIN_INITS)
+    return out[cols]
 
 
 def relative_to(agg: pd.DataFrame, baseline: str = "ifs_ens") -> pd.DataFrame:
@@ -1447,7 +2092,6 @@ def window_anchor(today: pd.Timestamp) -> pd.Timestamp:
 
 AGGREGATES_RELPATH = "eval/scorecard/aggregates.parquet"
 _AGG_META_KEY = b"scorecard"
-STATION_LEAD_DAYS: tuple[int, ...] = (1, 3, 5, 10)
 # Pair columns `aggregate` uses; the rest are dropped on load to bound memory.
 _AGG_PAIR_COLUMNS: list[str] = [
     "station",
@@ -1490,8 +2134,55 @@ def _aggregates_stale() -> bool:
     return newest > path.stat().st_mtime
 
 
+def _variable_scores(variable: str) -> set[str]:
+    spec = SCORECARD_VARIABLES[variable]
+    return {*spec["scores"], *spec.get("extra_scores", ())}
+
+
+def _relative_with_significance(
+    rows: pd.DataFrame, lead: pd.DataFrame, variable: str, period: int, mode: str
+) -> pd.DataFrame:
+    """`relative_to(lead)` plus `diff_`, `lo_`, `hi_`, `sig_` per testable score."""
+    rel = relative_to(lead)
+    keys = ["variable", "store", "lead_day"]
+    for score in SIGNIFICANCE_SCORES:
+        if score not in _variable_scores(variable):
+            continue
+        sig = significance(rows, score=score, period_days=period, mode=mode)
+        sig = sig[[*keys, "diff", "lo", "hi", "sig"]].rename(
+            columns={c: f"{c}_{score}" for c in ("diff", "lo", "hi", "sig")}
+        )
+        rel = rel.merge(sig, on=keys, how="left")
+    return rel
+
+
+def _aggregate_pieces(
+    rows: pd.DataFrame, variable: str, mode: str, period: int
+) -> list[pd.DataFrame]:
+    """Every kind of one variable, mode and period (see `write_aggregates`)."""
+    tag = {"mode": mode, "period_days": period}
+    lead = aggregate(rows, period, by=("store", "lead_day"), mode=mode)
+    pieces = [lead.assign(kind="lead", **tag)]
+    rel = _relative_with_significance(rows, lead, variable, period, mode)
+    pieces.append(rel.assign(kind="lead_relative", **tag))
+    # Whole window, all leads: rmse_bc/mae_bc subtract each (store, station)
+    # mean error over every lead, as on the other tabs.
+    by_station = aggregate(rows, period, by=("store", "lead_day", "station"), mode=mode)
+    keep = by_station[by_station["lead_day"].isin(STATION_LEAD_DAYS)]
+    pieces.append(keep.assign(kind="station", **tag))
+    pieces.append(diurnal(rows, period, mode).assign(kind="diurnal", **tag))
+    hist = rank_histogram(rows, period, STATION_LEAD_DAYS, mode)
+    pieces.append(hist.assign(kind="rank", **tag))
+    for t in SCORECARD_VARIABLES[variable]["thresholds"] or ():
+        rel_t = reliability(rows, period, t, mode)
+        pieces.append(rel_t.assign(kind="reliability", threshold=float(t), **tag))
+        roc_t = roc(rows, period, t, mode)
+        pieces.append(roc_t.assign(kind="roc", threshold=float(t), **tag))
+    return [p for p in pieces if not p.empty]
+
+
 def write_aggregates(today: pd.Timestamp) -> Path:
-    """Aggregate the stored window once, for every period, into one Parquet.
+    """Aggregate the stored window once, for every mode and period, into one Parquet.
 
     Parameters
     ----------
@@ -1505,13 +2196,27 @@ def write_aggregates(today: pd.Timestamp) -> Path:
 
     Notes
     -----
-    Long form with a `kind` column: `lead` (absolute, by store and lead day),
-    `lead_relative` (the same as percent change against ifs_ens) and `station`
-    (by store and station at lead days `STATION_LEAD_DAYS`, with lat/lon/name),
-    each for every `period_days` in `SCORECARD_PERIODS`. Rows are read one
-    variable at a time (all stores together, so common inits hold). Key-value
-    metadata (`scorecard`): n_stations, start, end, generated, stores.
-    Written to a temporary name and renamed.
+    Long form; every row has `kind`, `mode` (`SCORECARD_MODES`), `period_days`
+    (`SCORECARD_PERIODS`), `variable` and `store`, and `mode_applied` (False
+    where the variable has no such mode and its raw scores stand in). Kinds:
+
+    - `lead`: `aggregate` by store and lead day.
+    - `lead_relative`: the same as percent change against ifs_ens
+      (`relative_to`), plus `diff_{s}`, `lo_{s}`, `hi_{s}`, `sig_{s}` from
+      `significance` for each testable score s the variable offers.
+    - `station`: by store and station at lead days `STATION_LEAD_DAYS`, with
+      lat/lon/name.
+    - `diurnal`: `diurnal` (`lead_group`, `valid_hour`).
+    - `rank`: `rank_histogram` at `STATION_LEAD_DAYS` (`bin`, `count`, `freq`).
+    - `reliability` and `roc`: per `threshold` of a variable with thresholds
+      (`lead_group`, `bin`… / `j`, `pod`, `pofd`, `area`).
+
+    Rows are read one variable at a time (all stores together, so common
+    inits hold). Key-value metadata (`scorecard`): n_stations, start, end,
+    generated, stores, lacking, modes, orography_source, and
+    height_corrected_excluded (2 m temperature stations with no height
+    correction: unknown elevation or no orography cell). Written to a
+    temporary name and renamed.
     """
     first, last = _window(today)
     net = station_network.load_network()
@@ -1522,6 +2227,7 @@ def write_aggregates(today: pd.Timestamp) -> Path:
             ["station", "lat", "lon", "name"]
         ]
     pieces, stores_present, stations, inits = [], set(), set(), []
+    hc_excluded = 0
     for variable in SCORECARD_VARIABLES:
         rows = scores_db.load_rows(SCORECARD_STORES, [variable], first, last)
         if rows.empty:
@@ -1531,26 +2237,30 @@ def write_aggregates(today: pd.Timestamp) -> Path:
         stores_present |= set(rows["store"].unique())
         stations |= set(rows["station"].astype(str).unique())
         inits += [rows["init"].min(), rows["init"].max()]
-        for period in SCORECARD_PERIODS:
-            lead = aggregate(rows, period, by=("store", "lead_day"))
-            pieces.append(lead.assign(kind="lead", period_days=period))
-            pieces.append(
-                relative_to(lead).assign(kind="lead_relative", period_days=period)
-            )
-            # Whole window, all leads: rmse_bc/mae_bc subtract each (store,
-            # station) mean error over every lead, as on the other tabs.
-            by_station = aggregate(rows, period, by=("store", "lead_day", "station"))
-            keep = by_station[by_station["lead_day"].isin(STATION_LEAD_DAYS)]
-            if not keep.empty:
-                pieces.append(keep.assign(kind="station", period_days=period))
+        if variable == "temperature_2m":
+            has_dz = rows.groupby(rows["station"].astype(str))["dz"].count()
+            hc_excluded = int((has_dz == 0).sum())
+        for mode in SCORECARD_MODES:
+            for period in SCORECARD_PERIODS:
+                pieces += _aggregate_pieces(rows, variable, mode, period)
         del rows
     path = aggregates_path()
     if not pieces:
         logger.warning("No scorecard rows to aggregate: %s not written", path)
         return path
     out = pd.concat(pieces, ignore_index=True)
-    out["lead_day"] = out["lead_day"].astype("Int64")
-    out["station"] = out["station"].astype("string")
+    # One schema whichever kinds had rows.
+    for col in ("lead_day", "bin", "valid_hour", "j", "station", "lead_group"):
+        if col not in out:
+            out[col] = pd.NA
+    for col in ("lead_day", "bin", "valid_hour", "j"):
+        out[col] = pd.to_numeric(out[col]).astype("Int64")
+    for col in ("station", "lead_group"):
+        out[col] = out[col].astype("string")
+    if "threshold" not in out:
+        out["threshold"] = np.nan
+    out["mode_applied"] = out["mode_applied"].astype("boolean")
+    out["low_n"] = out["low_n"].astype("boolean")
     if coords is not None:
         out = out.merge(coords, on="station", how="left")
     else:
@@ -1562,6 +2272,9 @@ def write_aggregates(today: pd.Timestamp) -> Path:
         "generated": pd.Timestamp.now("UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
         "stores": [s for s in SCORECARD_STORES if s in stores_present],
         "lacking": load_lacking(),
+        "modes": list(SCORECARD_MODES),
+        "orography_source": orography_source(),
+        "height_corrected_excluded": hc_excluded,
     }
     table = pa.Table.from_pandas(out, preserve_index=False)
     table = table.replace_schema_metadata(
@@ -1580,7 +2293,13 @@ def _read_aggregates(path: str, mtime_ns: int) -> tuple[pd.DataFrame, dict]:
     """Read the file; `mtime_ns` is only the cache key."""
     table = pq.read_table(path)
     meta = json.loads((table.schema.metadata or {}).get(_AGG_META_KEY, b"{}"))
-    return table.to_pandas(), meta
+    frame = table.to_pandas()
+    # A file written before the display modes holds raw scores only.
+    if "mode" not in frame:
+        frame["mode"] = "raw"
+    if "mode_applied" not in frame:
+        frame["mode_applied"] = True
+    return frame, meta
 
 
 def load_aggregates() -> tuple[pd.DataFrame, dict] | None:
@@ -1623,6 +2342,22 @@ def _read_orography(path: Path) -> dict[str, float]:
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
         logger.warning("Unreadable station orography %s (%s)", path, err)
     return {}
+
+
+@functools.lru_cache(maxsize=1)
+def _read_orography_source(path: Path) -> str | None:
+    """The orography file's `source` text, or None. Never raises."""
+    try:
+        source = json.loads(path.read_text()).get("source")
+    except (OSError, ValueError, AttributeError) as err:
+        logger.warning("No orography source from %s (%s)", path, err)
+        return None
+    return str(source) if source is not None else None
+
+
+def orography_source() -> str | None:
+    """Where the station-cell orography came from (`source` of the JSON)."""
+    return _read_orography_source(OROGRAPHY_PATH)
 
 
 def station_orography() -> dict[str, float]:
