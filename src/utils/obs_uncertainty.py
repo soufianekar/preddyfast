@@ -1,7 +1,8 @@
 """Observation representativeness uncertainty (ECMWF Tech Memo 865).
 
 Ben Bouallègue (2020), "Accounting for representativeness in the verification of
-ensemble forecasts", ECMWF Technical Memorandum 865. Pure NumPy/SciPy; the
+ensemble forecasts", ECMWF Technical Memorandum 865. The precipitation model
+applies to daily (24 h) totals only (TM865 section 3.3). Pure NumPy/SciPy; the
 perturbed-ensemble draw follows Ferro (2017): each member is replaced by one
 sample from the observation-error distribution centred on it.
 """
@@ -93,7 +94,9 @@ def perturb(
     if variable not in VARIABLES:
         raise ValueError(f"Unsupported variable for TM865 perturbation: {variable}")
     x = np.asarray(members, dtype=float)
-    if draws:
+    if draws is not None:
+        if draws < 1:
+            raise ValueError(f"draws must be >= 1, got {draws}")
         x = np.repeat(x, int(draws), axis=-1)
     if variable == "temperature_2m":
         if dz_m is None:
@@ -102,16 +105,18 @@ def perturb(
         dz = dz.reshape(dz.shape + (1,) * (x.ndim - dz.ndim))
         shift, sigma = t2m_params(dz, delta_km)
         return x + shift + sigma * rng.standard_normal(x.shape)
+    ok = np.isfinite(x)
+    xs = np.where(ok, np.maximum(x, 0.0), 0.0)
     if variable == "wind_speed_10m":
         a0, a1, b1 = wind_params(delta_km)
-        mu = a0 + a1 * x
-        sigma = b1 * np.sqrt(np.maximum(x, 0.0)) + 0.01
-        return stats.truncnorm.rvs(
+        mu = a0 + a1 * xs
+        sigma = b1 * np.sqrt(xs) + 0.01
+        out = stats.truncnorm.rvs(
             (0.0 - mu) / sigma, np.inf, loc=mu, scale=sigma, random_state=rng
         )
+        return np.where(ok, out, np.nan)
     p = precip_params(delta_km)
-    root = np.sqrt(np.maximum(x, 0.0))
-    mu = p["alpha0"] + p["alpha1"] * x
-    sigma = p["beta0"] + p["beta1"] * root
+    mu = p["alpha0"] + p["alpha1"] * xs
+    sigma = p["beta0"] + p["beta1"] * np.sqrt(xs)
     g = stats.gamma.rvs(mu**2 / sigma**2, scale=sigma**2 / mu, random_state=rng)
-    return np.maximum(g - p["delta"], 0.0)
+    return np.where(ok, np.maximum(g - p["delta"], 0.0), np.nan)

@@ -10,8 +10,13 @@ from utils.settings import GRID_STORES
 def test_native_km_declared():
     got = {k: v["native_km"] for k, v in GRID_STORES.items()}
     assert got == {
-        "ifs_ens": 9, "ifs_control": 9, "aifs_ens": 31, "aifs_single": 31,
-        "gefs": 25, "gfs": 13, "icon_eu": 6.5,
+        "ifs_ens": 9,
+        "ifs_control": 9,
+        "aifs_ens": 31,
+        "aifs_single": 31,
+        "gefs": 25,
+        "gfs": 13,
+        "icon_eu": 6.5,
     }
 
 
@@ -111,3 +116,29 @@ def test_temperature_requires_dz_and_unknown_variable_raises():
         ou.perturb(np.ones((1, 3)), "temperature_2m", 9, rng)
     with pytest.raises(ValueError):
         ou.perturb(np.ones((1, 3)), "humidity", 9, rng)
+
+
+@pytest.mark.parametrize(
+    "variable", ["temperature_2m", "wind_speed_10m", "precipitation_24h"]
+)
+def test_nan_member_stays_nan_others_finite(variable):
+    x = np.full((2, 6), 3.0)
+    x[0, 2] = np.nan
+    out = ou.perturb(
+        x, variable, 9, np.random.default_rng(0), dz_m=np.array([0.0, 0.0])
+    )
+    assert np.isnan(out[0, 2]) and np.isnan(out).sum() == 1
+
+
+@pytest.mark.parametrize("variable", ["wind_speed_10m", "precipitation_24h"])
+def test_slightly_negative_member_is_clipped(variable):
+    out = ou.perturb(np.full((1, 50), -0.1), variable, 9, np.random.default_rng(0))
+    assert np.isfinite(out).all() and (out >= 0).all()
+
+
+@pytest.mark.parametrize("draws", [0, -3])
+def test_draws_below_one_raises(draws):
+    with pytest.raises(ValueError):
+        ou.perturb(
+            np.ones((1, 2)), "wind_speed_10m", 9, np.random.default_rng(0), draws=draws
+        )
