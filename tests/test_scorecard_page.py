@@ -368,6 +368,10 @@ def test_full_aggregates_hold_every_kind_and_mode(full_env):
     assert meta["modes"] == list(SCORECARD_MODES)
     assert meta["height_corrected_excluded"] == 1  # station B has no dz
     assert meta["orography_source"].startswith("ERA5")
+    assert meta["mode_raw_scores"] == {
+        k: list(v) for k, v in scorecard.MODE_RAW_SCORES.items()
+    }
+    assert "ets_1" in meta["mode_raw_scores"]["representativeness"]
     hc = agg[(agg["kind"] == "lead") & (agg["mode"] == "height_corrected")]
     t2m = hc[hc["variable"] == "temperature_2m"]
     assert t2m["mode_applied"].all() and (t2m["n_stations"] == 1).all()

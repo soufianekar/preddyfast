@@ -454,7 +454,7 @@ from utils.settings import SCORECARD_ROW_VERSION  # noqa: E402
 def test_row_version_is_written(env):
     scorecard.refresh(("gfs",), VARS, TODAY)
     meta = scores_db.scorecard_meta("gfs", "temperature_2m", TODAY - pd.Timedelta(days=3))
-    assert meta["row_version"] == SCORECARD_ROW_VERSION == 2
+    assert meta["row_version"] == SCORECARD_ROW_VERSION == 3
 
 
 def test_needs_scoring_on_row_version():

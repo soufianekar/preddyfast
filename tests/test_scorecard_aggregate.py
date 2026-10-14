@@ -582,3 +582,45 @@ def test_significance_does_not_depend_on_row_order():
     b = scorecard.significance(rows.sample(frac=1.0, random_state=0), score="mae",
                                period_days=14)
     pd.testing.assert_frame_equal(a.reset_index(drop=True), b.reset_index(drop=True))
+
+
+
+# --- Task 5 fix round 1: honest mode labels (Rulings V5, V6) ------------------------
+
+
+def test_height_corrected_rank_histogram_reads_rank_hc():
+    rows = _rows(stations=("A", "B"), rank=50.0, rank_hc=[0.0, np.nan],
+                 n_members=50.0, err_hc=[0.0, np.nan])
+    raw = scorecard.rank_histogram(rows, 7, lead_days=(1,)).set_index("bin")
+    assert raw.loc[9, "count"] == pytest.approx(2.0)
+    hc = scorecard.rank_histogram(rows, 7, lead_days=(1,), mode="height_corrected")
+    hc = hc.set_index("bin")
+    assert hc.loc[0, "count"] == pytest.approx(1.0) and hc["n"].iloc[0] == 1
+    assert hc["mode_applied"].all()
+    wind = _rows(variable="wind_speed_10m", rank=50.0, rank_hc=0.0, n_members=50.0)
+    w = scorecard.rank_histogram(wind, 7, lead_days=(1,), mode="height_corrected")
+    assert not w["mode_applied"].any()
+    assert w.set_index("bin").loc[9, "count"] == pytest.approx(1.0)
+
+
+def test_mode_raw_scores_name_the_contingency_scores_in_every_mode():
+    from utils.settings import SCORECARD_MODES
+
+    assert set(scorecard.MODE_RAW_SCORES) == set(SCORECARD_MODES)
+    pert = set(scorecard.MODE_RAW_SCORES["representativeness"])
+    assert {"ets", "hss", "frequency_bias", "pod", "far"} <= pert
+    assert {"ets_1", "fbi_5", "pod_10", "far_1"} <= pert
+    assert "crps" not in pert and "brier_1" not in pert
+
+
+def test_contingency_scores_are_identical_across_raw_and_representativeness():
+    h, m, f, cn = 10, 5, 3, 82
+    rows = _counts_rows(h, m, f, cn)
+    rows = rows.assign(wet_fc_5=rows["wet_fc"], wet_obs_5=rows["wet_obs"],
+                       err_pert=0.3, crps_pert=0.2)
+    raw = _one(scorecard.aggregate(rows, 7, min_n=1), lead_day=1)
+    pert = _one(scorecard.aggregate(rows, 7, min_n=1, mode="representativeness"),
+                lead_day=1)
+    for score in scorecard.MODE_RAW_SCORES["representativeness"]:
+        assert raw[score] == pert[score] or (np.isnan(raw[score]) and np.isnan(pert[score])), score
+    assert raw["mae"] != pert["mae"]  # the mode did apply elsewhere

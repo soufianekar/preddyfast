@@ -107,6 +107,7 @@ PAIR_COLUMNS: list[str] = [
     "dz",
     "err_hc",
     "crps_hc",
+    "rank_hc",
     # TM865 perturbed ensemble (Ferro 2017).
     "crps_pert",
     "spread2_pert",
@@ -475,8 +476,8 @@ def pair_scores(
         `brier` is the fair Brier score at the threshold (`>=`) for ensembles
         of a variable whose scores include it, NaN otherwise.
 
-        Temperature only: `dz`, and `err_hc` / `crps_hc` of the members plus
-        `0.0065 * dz` (TM865 Eq. 2). Temperature, wind and 24 h precipitation:
+        Temperature only: `dz`, and `err_hc` / `crps_hc` / `rank_hc` of the
+        members plus `0.0065 * dz` (TM865 Eq. 2; `rank_hc` NaN for one member). Temperature, wind and 24 h precipitation:
         `crps_pert` (fair), `spread2_pert` (ddof=1) and `err_pert` (mean minus
         observation) of the TM865 perturbed ensemble at the store's
         `native_km` — temperature centred on the height-corrected value; a
@@ -574,8 +575,8 @@ def pair_scores(
     else:
         crps_hc = err_hc = nan
 
-    # Draw order is fixed (raw ranks, perturbation, perturbed ranks) so the
-    # same item always gets the same numbers.
+    # Draw order is fixed (raw ranks, perturbation, perturbed ranks, then
+    # height-corrected ranks) so the same item always gets the same numbers.
     rank = _rank_rows(members, o, rng) if n_members > 1 else nan
     delta_km = GRID_STORES.get(store, {}).get("native_km")
     pert = None
@@ -599,6 +600,12 @@ def pair_scores(
         n_members_pert = np.full(keep.size, float(pert.shape[1]))
     else:
         crps_pert = spread2_pert = err_pert = rank_pert = n_members_pert = nan
+    # Drawn last, so the raw ranks and the perturbations keep the stream they
+    # had before rank_hc existed. NaN where dz is (the shifted members are).
+    if is_t2m and n_members > 1:
+        rank_hc = _rank_rows(members + shift[:, None], o, rng)
+    else:
+        rank_hc = nan
 
     per_threshold = {}
     used = [float(t) for t in spec["thresholds"] or ()]
@@ -643,6 +650,7 @@ def pair_scores(
             "dz": dz_pair if is_t2m else nan,
             "err_hc": err_hc,
             "crps_hc": crps_hc,
+            "rank_hc": rank_hc,
             "crps_pert": crps_pert,
             "spread2_pert": spread2_pert,
             "err_pert": err_pert,
@@ -724,6 +732,26 @@ def _keep_common_inits(rows: pd.DataFrame) -> pd.DataFrame:
     return rows[keys.isin(common.index)]
 
 
+# Scores computed from raw columns whatever the mode (Ruling V6): the
+# contingency scores come from the raw ensemble mean's event flags. The
+# aggregates metadata carries this table so a figure can say so.
+_CONTINGENCY_RAW: tuple[str, ...] = (
+    "ets",
+    "hss",
+    "frequency_bias",
+    "pod",
+    "far",
+    *(
+        f"{score}_{threshold_key(t)}"
+        for t in _THRESHOLDS
+        for score in ("ets", "fbi", "pod", "far")
+    ),
+)
+MODE_RAW_SCORES: dict[str, tuple[str, ...]] = {
+    mode: _CONTINGENCY_RAW for mode in SCORECARD_MODES
+}
+
+
 def mode_columns(variable: str, mode: str) -> dict[str, str | bool]:
     """Pair columns a display mode reads for one variable.
 
@@ -745,11 +773,12 @@ def mode_columns(variable: str, mode: str) -> dict[str, str | bool]:
 
     Notes
     -----
-    Height-corrected: `err_hc` / `crps_hc`; the spread, ranks and
-    probabilities stay raw (a uniform shift of the members does not change
-    them, and no shifted rank is stored). Representativeness: the TM865
-    perturbed ensemble for every part, with M = `n_members_pert`. The
-    contingency flags (`wet_fc*`) are always the raw ensemble mean's.
+    Height-corrected: `err_hc`, `crps_hc` and `rank_hc` (members + 0.0065·dz
+    against the observation); the spread is raw (a uniform shift does not
+    change it), and so are the event probabilities and the reliability / ROC
+    built on them. Representativeness: the TM865 perturbed ensemble for every
+    part, with M = `n_members_pert`. The contingency scores (`wet_fc*` of the
+    raw ensemble mean) are raw in every mode: `MODE_RAW_SCORES`.
     """
     if mode not in SCORECARD_MODES:
         raise ValueError(f"Unknown scorecard mode {mode!r}")
@@ -765,7 +794,7 @@ def mode_columns(variable: str, mode: str) -> dict[str, str | bool]:
         "applied": mode == "raw",
     }
     if mode == "height_corrected" and variable == "temperature_2m":
-        cols.update(err="err_hc", crps="crps_hc", applied=True)
+        cols.update(err="err_hc", crps="crps_hc", rank="rank_hc", applied=True)
     elif mode == "representativeness" and variable in obs_uncertainty.VARIABLES:
         headline = SCORECARD_VARIABLES.get(variable, {}).get("threshold")
         cols.update(
@@ -1033,6 +1062,10 @@ def aggregate(
     `rmse_ss_persist` = 1 − mse / mse_persist and `crpss_persist` = 1 − crps /
     mae_persist (a deterministic forecast's CRPS is its MAE), both over the
     pairs that have a persistence observation only.
+
+    `mode_applied` refers to the error, CRPS, spread, Brier, rank and
+    probability parts; the contingency scores are raw in every mode
+    (`MODE_RAW_SCORES`, also in the aggregates metadata).
 
     ETS, HSS, frequency bias, POD and FAR come from the group's summed
     contingency counts (`contingency_scores`) at the headline threshold, and
@@ -2213,7 +2246,8 @@ def write_aggregates(today: pd.Timestamp) -> Path:
 
     Rows are read one variable at a time (all stores together, so common
     inits hold). Key-value metadata (`scorecard`): n_stations, start, end,
-    generated, stores, lacking, modes, orography_source, and
+    generated, stores, lacking, modes, mode_raw_scores (`MODE_RAW_SCORES`),
+    orography_source, and
     height_corrected_excluded (2 m temperature stations with no height
     correction: unknown elevation or no orography cell). Written to a
     temporary name and renamed.
@@ -2275,6 +2309,7 @@ def write_aggregates(today: pd.Timestamp) -> Path:
         "modes": list(SCORECARD_MODES),
         "orography_source": orography_source(),
         "height_corrected_excluded": hc_excluded,
+        "mode_raw_scores": {k: list(v) for k, v in MODE_RAW_SCORES.items()},
     }
     table = pa.Table.from_pandas(out, preserve_index=False)
     table = table.replace_schema_metadata(

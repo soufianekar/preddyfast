@@ -488,3 +488,47 @@ def test_precip_deterministic_brier_raw_nan_perturbed_finite():
 def test_threshold_columns_nan_for_temperature():
     rows = scorecard.pair_scores(_matched([[1.0], [2.0]], [1.0]), "temperature_2m")
     assert rows[["p_1", "p_pert_5", "brier_10", "wet_obs_1"]].isna().all().all()
+
+
+
+# --- Task 5 fix round 1: rank_hc (Ruling V5) ----------------------------------------
+
+
+def test_rank_hc_ranks_the_obs_among_the_height_corrected_members():
+    # Members 10, 11, 12 and obs 11.5: raw rank 2. With dz = +100 m the members
+    # become 10.65, 11.65, 12.65, so the obs falls to rank 1.
+    stations = ["S1", "S2"]
+    leads = np.array([6.0])
+    fc = np.array([[[10.0], [11.0], [12.0]]] * 2)
+    obs = np.array([[11.5], [11.5]])
+    rows = scorecard.pair_scores(_many(fc, obs, stations, leads), "temperature_2m",
+                                 dz={"S1": 100.0})
+    s1, s2 = rows[rows["station"] == "S1"].iloc[0], rows[rows["station"] == "S2"].iloc[0]
+    assert s1["rank"] == 2.0 and s1["rank_hc"] == 1.0
+    assert np.isnan(s2["rank_hc"]) and s2["rank"] == 2.0  # no dz: NaN, never raw
+
+
+def test_rank_hc_is_nan_for_one_member_and_other_variables():
+    rows = scorecard.pair_scores(_matched([[1.0]], [1.0]), "temperature_2m",
+                                 dz={"A": 10.0})
+    assert rows["rank_hc"].isna().all()
+    stations = ["S1"]
+    fc = np.array([[[1.0], [2.0], [3.0]]])
+    wind = scorecard.pair_scores(
+        _many(fc, np.array([[2.5]]), stations, np.array([6.0]),
+              variable="wind_speed_10m"), "wind_speed_10m")
+    assert wind["rank_hc"].isna().all()
+
+
+def test_rank_hc_is_reproducible_and_finite_with_dz():
+    """Same item, same numbers (rank_hc is drawn last, after rank_pert)."""
+    rng = np.random.default_rng(3)
+    stations = ["S1", "S2"]
+    leads = np.array([6.0, 12.0])
+    fc = np.round(rng.normal(10, 1, size=(2, 4, 2)))
+    obs = np.round(rng.normal(10, 1, size=(2, 2)))
+    m = _many(fc, obs, stations, leads)
+    a = scorecard.pair_scores(m, "temperature_2m", dz={"S1": 30.0, "S2": 0.0})
+    b = scorecard.pair_scores(m, "temperature_2m", dz={"S1": 30.0, "S2": 0.0})
+    pd.testing.assert_frame_equal(a, b)
+    assert np.isfinite(a["rank_hc"]).all()
