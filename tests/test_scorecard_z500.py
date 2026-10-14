@@ -132,7 +132,7 @@ class Env:
         times = pd.date_range(end=self.obs_end, periods=24 * 60, freq="h", tz="UTC")
         return {i: pd.DataFrame({"valid_time": times, "temperature_2m": 9.0}) for i in ids}
 
-    def station_cube(self, store, variable, init, stations, accum, budget_mb=None):
+    def station_cube(self, store, variable, init, stations, accum, budget_mb=None, window_end_hour=None):
         self.calls.append((store, variable, init))
         if (store, init) in self.fail:
             raise scorecard.GridDataError("incomplete run")

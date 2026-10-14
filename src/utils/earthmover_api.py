@@ -1438,11 +1438,14 @@ def _station_cache_path(
     init: pd.Timestamp,
     stations: pd.DataFrame,
     accum_hours: int | None,
+    window_end_hour: int | None = None,
 ) -> Path:
     """Disk path for one run's station extract, keyed by the network and window.
 
     The hash covers station ids, coordinates (4 dp) and the window, so a
-    different network or window never reads a stale file.
+    different network or window never reads a stale file. A window pinned to an
+    end hour (24 h totals ending 06 UTC) is keyed on it too; unpinned keys are
+    unchanged, so existing files stay valid.
     """
     key = json.dumps(
         {
@@ -1453,6 +1456,7 @@ def _station_cache_path(
                 )
             ],
             "accum_hours": accum_hours,
+            **({"window_end_hour": window_end_hour} if window_end_hour is not None else {}),
             # Bump when windowing, scaling or the file layout changes, so an
             # older extract is never served for the new definition.
             "v": _STATION_CUBE_VERSION,
@@ -1628,11 +1632,18 @@ def _read_station_cells(
 
 
 def _station_windows(
-    values: np.ndarray, lead_hours: np.ndarray, accum_hours: int, step_type: str
+    values: np.ndarray,
+    lead_hours: np.ndarray,
+    accum_hours: int,
+    step_type: str,
+    window_end_hour: int | None = None,
+    init_hour: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Window totals ending at leads that are multiples of `accum_hours`.
 
-    Built by `climatology.accumulate_over_window` per (station, member); a lead
+    With `window_end_hour` the windows instead end where the valid time's UTC
+    hour (`init_hour` + lead) is that hour, e.g. 24 h totals ending 06 UTC from
+    a 00 UTC run: T+30, T+54, ... Built by `climatology.accumulate_over_window` per (station, member); a lead
     whose window start is not a step is dropped, never reported short.
     """
     n_st, n_mem, n_lead = values.shape
@@ -1647,7 +1658,11 @@ def _station_windows(
     out = accumulate_over_window(
         df, accum_hours, step_type=step_type, group_cols=("station", "member")
     )
-    out = out[np.isclose(out["lead_hours"] % accum_hours, 0.0)]
+    if window_end_hour is None:
+        out = out[np.isclose(out["lead_hours"] % accum_hours, 0.0)]
+    else:
+        hour = (init_hour + out["lead_hours"]) % 24
+        out = out[np.isclose(hour, window_end_hour)]
     leads = np.sort(out["lead_hours"].unique())
     cube = np.full((n_st, n_mem, len(leads)), np.nan)
     cube[
@@ -1689,6 +1704,7 @@ def station_cube(
     stations: pd.DataFrame,
     accum_hours: int | None,
     budget_mb: float | None = None,
+    window_end_hour: int | None = None,
 ) -> xr.DataArray:
     """One run of one store at every station's grid cell, read by chunk tile.
 
@@ -1730,6 +1746,10 @@ def station_cube(
         actually read (every component's); `None` is the interactive
         `READ_BUDGET_MB`. Checked once per call, before any read, and only
         when the extract is not already on disk.
+    window_end_hour : int or None
+        UTC hour the windows must end at (24 h totals ending 06 UTC from a
+        00 UTC run: T+30, T+54, ...), replacing the multiples-of-`P` rule;
+        part of the cache key. `None` keeps the multiples-of-`P` leads.
 
     Returns
     -------
@@ -1767,13 +1787,17 @@ def station_cube(
 
     source = GRID_STORES[store].get("source_store")
     if source:
-        base = station_cube(source, variable, init, stations, accum_hours, budget_mb)
+        base = station_cube(
+            source, variable, init, stations, accum_hours, budget_mb, window_end_hour
+        )
         member = GRID_STORES[store]["member"]
         view = base.sel(member=[member])
         view.attrs = {**base.attrs, "store": store}
         return view
 
-    path = _station_cache_path(store, variable, init, stations, accum_hours)
+    path = _station_cache_path(
+        store, variable, init, stations, accum_hours, window_end_hour
+    )
     if path.exists():
         return _load_station_cube(path)
 
@@ -1820,7 +1844,7 @@ def station_cube(
     unit = meta_var["unit"]
     if accum_hours:
         values, lead_hours = _station_windows(
-            values, lead_hours, accum_hours, step_type
+            values, lead_hours, accum_hours, step_type, window_end_hour, init.hour
         )
         if lead_hours.size == 0:
             raise GridDataError(

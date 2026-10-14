@@ -88,7 +88,7 @@ class Env:
         monkeypatch.setattr(station_network, "load_configured", lambda: self.configured)
         monkeypatch.setattr(station_network, "network_obs", self.network_obs)
 
-    def station_cube(self, store, variable, init, stations, accum, budget_mb=None):
+    def station_cube(self, store, variable, init, stations, accum, budget_mb=None, window_end_hour=None):
         self.calls.append((store, variable, init, budget_mb))
         if (store, init) in self.fail:
             raise GridDataError("incomplete")

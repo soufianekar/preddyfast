@@ -143,7 +143,7 @@ def dedupe_hourly(obs: pd.DataFrame) -> pd.DataFrame:
     pd.DataFrame
         `valid_time` (the hour, UTC) plus the scorecard observation columns
         (NaN where none): instants (`temperature_2m`, `wind_speed_10m`) and
-        `precipitation_1h` and `precip_total_6h` take the report nearest the
+        `precipitation_1h` and `precip_total_24h` take the report nearest the
         hour within +-15 min, SYNOP preferred over METAR (accumulations cover
         the period ending at `valid_time`). Rows with no value are dropped.
     """
@@ -245,7 +245,7 @@ def network_obs(
     Reads every calendar year the window touches. Each frame has `valid_time`
     (whole UTC hours, tz-aware, within the window) and the columns
     `temperature_2m`, `wind_speed_10m`, `precipitation_1h` (hour ending at
-    `valid_time`) and `precip_total_6h` (station-reported total over the 6 h
+    `valid_time`) and `precip_total_24h` (station-reported total over the 24 h
     ending at `valid_time`); NaN where absent. One value per station, variable
     and hour: the report nearest the hour within +-15 min, SYNOP over METAR.
     Rows with no value are dropped; a station with no data gets an empty frame.

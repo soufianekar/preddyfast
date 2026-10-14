@@ -425,8 +425,9 @@ def _div(num: np.ndarray, den: np.ndarray) -> np.ndarray:
 def contingency_scores(
     h: np.ndarray, m: np.ndarray, f: np.ndarray, cn: np.ndarray
 ) -> dict[str, np.ndarray]:
-    """ETS, HSS, frequency bias, POD and FAR from summed hits, misses, false alarms and
-    correct negatives.
+    """ETS, HSS, frequency bias, POD and FAR from summed contingency counts.
+
+    Takes summed hits, misses, false alarms and correct negatives.
 
     The dynamical.org formulas, identical to `scores.categorical.
     BinaryContingencyManager` (which takes events, not counts):
@@ -975,6 +976,7 @@ def refresh(
                     subset,
                     accum,
                     budget_mb=SCORECARD_READ_BUDGET_MB,
+                    window_end_hour=_spec(variable).get("window_end_hour"),
                 )
             except GridDataError as err:
                 logger.warning(

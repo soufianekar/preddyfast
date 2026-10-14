@@ -400,3 +400,72 @@ def test_a_persistent_icechunk_error_raises_grid_data_error_after_three_attempts
     assert type(exc.value.__cause__).__name__ == "IcechunkError"
     assert len(calls) == 3 and len(sleeps) == 2
     assert not list(tmp_path.rglob("*.nc")) and not list(tmp_path.rglob("*.part"))
+
+
+# --- 24 h windows ending at 06 UTC (scorecard precipitation) ---------------------
+
+RATE = 1.0 / 3600.0  # kg m-2 s-1 = 1 mm/h
+
+
+def _rate_fields(leads):
+    """A rate (mm/h) that steps every 6 h, so a wrong window start shows in the total."""
+    def fn(m, t, la, lo):
+        mm = 1.0 + (np.ceil(np.maximum(t, 1e-9) / 6.0) % 5) + m
+        return np.where(t == 0, np.nan, mm * RATE) + 0 * la + 0 * lo
+    return {"precipitation_surface": fn}
+
+
+def _hand_total(member, end):
+    """Sum over (end-24, end] of the hourly rate the synthetic store implies."""
+    hours = np.arange(end - 23, end + 1.0)
+    return float(np.sum(1.0 + (np.ceil(hours / 6.0) % 5) + member))
+
+
+@pytest.mark.parametrize("step", [1.0, 3.0, 6.0])
+def test_24h_windows_ending_06_utc_from_a_00_utc_run(env, step):
+    leads = np.arange(0, 121, step)
+    env["stores"]["ifs_ens"] = _ds(
+        _rate_fields(leads), leads=leads, step_types={"precipitation_surface": "avg"}
+    )
+    st = _stations(("A", 50.0, 10.0))
+    cube = em.station_cube(
+        "ifs_ens", "precipitation_surface", INIT, st, 24, window_end_hour=6
+    )
+    np.testing.assert_array_equal(cube["lead_hours"].values, [30.0, 54.0, 78.0, 102.0])
+    assert set(pd.DatetimeIndex(cube["valid_time"].values).hour) == {6}
+    for k, lead in enumerate(cube["lead_hours"].values):
+        for member in range(3):
+            assert cube.sel(station="A").values[member, k] == pytest.approx(
+                _hand_total(member, lead), rel=1e-5
+            )
+    # The 00 UTC-ending cube is a different file: never served for a 06 UTC request.
+    plain = em.station_cube("ifs_ens", "precipitation_surface", INIT, st, 24)
+    np.testing.assert_array_equal(plain["lead_hours"].values, [24.0, 48.0, 72.0, 96.0, 120.0])
+    again = em.station_cube(
+        "ifs_ens", "precipitation_surface", INIT, st, 24, window_end_hour=6
+    )
+    np.testing.assert_array_equal(again["lead_hours"].values, cube["lead_hours"].values)
+
+
+def test_06_utc_24h_cube_with_reported_totals_yields_scored_pairs(env):
+    from utils import scorecard
+
+    leads = np.arange(0, 121, 6.0)
+    env["stores"]["ifs_ens"] = _ds(
+        _rate_fields(leads), leads=leads, step_types={"precipitation_surface": "avg"}
+    )
+    cube = em.station_cube(
+        "ifs_ens", "precipitation_surface", INIT, _stations(("A", 50.0, 10.0)), 24,
+        window_end_hour=6,
+    )
+    ends = INIT + pd.to_timedelta([30, 54], unit="h")
+    obs = pd.DataFrame({
+        "valid_time": pd.DatetimeIndex(ends).tz_localize("UTC"),
+        "precip_total_24h": [10.0, 20.0],
+        "precipitation_1h": [np.nan, np.nan],
+    })
+    matched = scorecard.match_station_obs(cube, {"A": obs}, "precipitation_24h")
+    assert list(matched["lead_hours"].values) == [30.0, 54.0, 78.0, 102.0]
+    rows = scorecard.pair_scores(matched, "precipitation_24h")
+    assert list(rows["lead_hours"]) == [30.0, 54.0]
+    assert rows["obs"].tolist() == [10.0, 20.0]
