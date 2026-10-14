@@ -1,0 +1,54 @@
+{
+  "source": "ERA5 invariant orography (geopotential/g), 0.25\u00b0",
+  "retrieved": "2026-10-14",
+  "cells": {
+    "UKI0000EGLL": {
+      "lat": 51.5,
+      "lon": -0.5,
+      "z_m": 74.05,
+      "elev_m": 25.3
+    },
+    "FRI0000LFPG": {
+      "lat": 49.0,
+      "lon": 2.5,
+      "z_m": 78.74,
+      "elev_m": 119.5
+    },
+    "GMI0000EDDB": {
+      "lat": 52.5,
+      "lon": 13.5,
+      "z_m": 50.27,
+      "elev_m": 47.8
+    },
+    "SPMU0098221": {
+      "lat": 40.5,
+      "lon": -3.5,
+      "z_m": 696.3,
+      "elev_m": 601.0
+    },
+    "ITMU0016242": {
+      "lat": 41.75,
+      "lon": 12.25,
+      "z_m": 29.48,
+      "elev_m": 3.0
+    },
+    "AUI0000LOWW": {
+      "lat": 48.0,
+      "lon": 16.5,
+      "z_m": 212.8,
+      "elev_m": 182.9
+    },
+    "GRI0000LGAV": {
+      "lat": 38.0,
+      "lon": 24.0,
+      "z_m": 146.5,
+      "elev_m": 93.9
+    },
+    "TUI0000LTFM": {
+      "lat": 41.25,
+      "lon": 28.75,
+      "z_m": 55.31,
+      "elev_m": 99.0
+    }
+  }
+}
