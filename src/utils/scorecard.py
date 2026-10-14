@@ -15,6 +15,8 @@ import logging
 import operator
 import os
 import time
+import zlib
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +29,7 @@ import xarray as xr
 from utils import (
     earthmover_api,
     hub_sync,
+    obs_uncertainty,
     observations,
     scores_db,
     station_network,
@@ -43,6 +46,7 @@ from utils.settings import (
     PRECOMPUTE_DIR,
     SCORE_DIRECTION,
     SCORECARD_DAYS,
+    SCORECARD_DETERMINISTIC_DRAWS,
     SCORECARD_INIT_HOUR,
     SCORECARD_LEAD_STEP_HOURS,
     SCORECARD_MAX_LEAD_HOURS,
@@ -51,6 +55,8 @@ from utils.settings import (
     SCORECARD_OBS_RECENT_DAYS,
     SCORECARD_PERIODS,
     SCORECARD_READ_BUDGET_MB,
+    SCORECARD_RNG_SEED,
+    SCORECARD_ROW_VERSION,
     SCORECARD_STATIONS,
     SCORECARD_STORES,
     SCORECARD_VARIABLES,
@@ -58,6 +64,27 @@ from utils.settings import (
 
 logger = logging.getLogger(__name__)
 
+
+def threshold_key(t: float) -> str:
+    """Column suffix of an event threshold: `g` format (1.0 -> "1", 0.5 -> "0.5")."""
+    return f"{float(t):g}"
+
+
+# Every event threshold of any variable: one column set per threshold, NaN for a
+# variable that does not use it, so all stored rows share one layout.
+_THRESHOLDS: tuple[float, ...] = tuple(
+    sorted(
+        {float(t) for v in SCORECARD_VARIABLES.values() for t in v["thresholds"] or ()}
+    )
+)
+_THRESHOLD_PARTS: tuple[str, ...] = (
+    "p",
+    "p_pert",
+    "wet_fc",
+    "wet_obs",
+    "brier",
+    "brier_pert",
+)
 PAIR_COLUMNS: list[str] = [
     "station",
     "init",
@@ -73,6 +100,20 @@ PAIR_COLUMNS: list[str] = [
     "wet_fc",
     "wet_obs",
     "brier",
+    # Height-corrected 2 m temperature (TM865 Eq. 2, ERA5 orography as proxy).
+    "dz",
+    "err_hc",
+    "crps_hc",
+    # TM865 perturbed ensemble (Ferro 2017).
+    "crps_pert",
+    "spread2_pert",
+    "err_pert",
+    "rank",
+    "rank_pert",
+    "n_members",
+    "n_members_pert",
+    "obs_persist",
+    *(f"{part}_{threshold_key(t)}" for t in _THRESHOLDS for part in _THRESHOLD_PARTS),
 ]
 _PAIR = "pair"
 
@@ -155,7 +196,9 @@ def match_station_obs(
     -------
     xarray.Dataset
         Dims `(station, lead_hours)` plus `member` for `fc`: `fc` (members),
-        `fc_mean` (member mean), `obs` (NaN where none) and `valid_time`.
+        `fc_mean` (member mean), `obs` (NaN where none), `obs_persist` (the
+        observation at `valid_time - persistence_offset(lead)`, matched by the
+        same rule, NaN where none) and `valid_time`.
         Leads beyond `SCORECARD_MAX_LEAD_HOURS` are dropped, and for a window
         variable with `window_end_hour` those not ending then. Instants take the
         report nearest the valid time within the variable's `tolerance`;
@@ -181,15 +224,21 @@ def match_station_obs(
         ends = (valid.hour == end_hour) & (valid.minute == 0)
         cube = cube.isel(lead_hours=np.flatnonzero(ends))
     times = pd.Series(pd.to_datetime(cube["valid_time"].values))
+    persist_times = times - persistence_offset(cube["lead_hours"].values)
 
-    rows = []
+    def _match(frame: pd.DataFrame, when: pd.Series) -> np.ndarray:
+        if spec["window_hours"]:
+            return _window_obs(frame, spec, when)
+        return _instant_obs(frame, spec["obs"], when, spec["tolerance"])
+
+    rows, persist = [], []
     for sid in cube["station"].values:
         frame = obs_by_station.get(str(sid), pd.DataFrame())
-        if spec["window_hours"]:
-            rows.append(_window_obs(frame, spec, times))
-        else:
-            rows.append(_instant_obs(frame, spec["obs"], times, spec["tolerance"]))
-    obs = np.vstack(rows) if rows else np.empty((0, cube.sizes["lead_hours"]))
+        rows.append(_match(frame, times))
+        persist.append(_match(frame, persist_times))
+    empty = np.empty((0, cube.sizes["lead_hours"]))
+    obs = np.vstack(rows) if rows else empty
+    obs_persist = np.vstack(persist) if persist else empty
 
     # station_cube is float32: a float32 member mean can land a few ulp below a
     # threshold the exact mean meets, so thresholds are applied in float64.
@@ -199,10 +248,21 @@ def match_station_obs(
             "fc": fc,
             "fc_mean": fc.mean("member"),
             "obs": (("station", "lead_hours"), obs),
+            "obs_persist": (("station", "lead_hours"), obs_persist),
         },
         attrs={**cube.attrs, "scorecard_variable": variable},
     )
     return ds
+
+
+def persistence_offset(lead_hours: np.ndarray) -> pd.TimedeltaIndex:
+    """How far back the persistence observation lies: 24·ceil(lead/24) h.
+
+    The same time of day at or before the init (lead 6 h and 30 h of a 00 UTC
+    run both use 18 UTC the day before), so persistence never sees the future.
+    """
+    days = np.ceil(np.asarray(lead_hours, dtype=float) / 24.0)
+    return pd.to_timedelta(24.0 * days, unit="h")
 
 
 def reference_leads(cube: xr.DataArray) -> xr.DataArray:
@@ -281,6 +341,8 @@ def match_reference(
             "fc": fc,
             "fc_mean": fc.mean("member"),
             "obs": (("station", "lead_hours"), obs),
+            # A T+0 reference has no persistence forecast in the scorecard.
+            "obs_persist": (("station", "lead_hours"), np.full_like(obs, np.nan)),
         },
         attrs={**cube.attrs, "scorecard_variable": variable},
     )
@@ -292,16 +354,109 @@ def _empty_pairs(dropped: int) -> pd.DataFrame:
     return out
 
 
-def pair_scores(matched: xr.Dataset, variable: str) -> pd.DataFrame:
+def item_rng(
+    store: str, variable: str, init: pd.Timestamp | str
+) -> np.random.Generator:
+    """The generator of one (store, variable, init): reproducible, order-free.
+
+    Seeded from `SCORECARD_RNG_SEED` and a CRC-32 of the item (never Python's
+    salted `hash`), so a rescore draws the same perturbations and tie-breaks
+    whichever items were processed before it.
+    """
+    key = f"{store}|{variable}|{pd.Timestamp(init):%Y-%m-%dT%H:%M}"
+    seq = np.random.SeedSequence([SCORECARD_RNG_SEED, zlib.crc32(key.encode())])
+    return np.random.default_rng(seq)
+
+
+def _crps_rows(members: np.ndarray, obs: np.ndarray) -> np.ndarray:
+    """CRPS per row of `members` (pair, member): fair for M > 1, ECDF for M = 1.
+
+    NaN where the observation or any member is not finite (the `scores` kernel
+    would otherwise return a number for a NaN member).
+    """
+    m = members.shape[1]
+    out = scores.probability.crps_for_ensemble(
+        xr.DataArray(members, dims=(_PAIR, "member")),
+        xr.DataArray(obs, dims=(_PAIR,)),
+        "member",
+        method="fair" if m > 1 else "ecdf",
+        preserve_dims=[_PAIR],
+    ).values
+    ok = np.isfinite(members).all(axis=1) & np.isfinite(obs)
+    return np.where(ok, out, np.nan)
+
+
+def _brier_rows(
+    members: np.ndarray, obs: np.ndarray, thresholds: list[float]
+) -> np.ndarray:
+    """Fair Brier score (`>=`) per row and threshold, shape (pair, threshold).
+
+    NaN for one member (the fair correction divides by M - 1) and where the
+    observation or any member is not finite.
+    """
+    nan = np.full((members.shape[0], len(thresholds)), np.nan)
+    if members.shape[1] < 2 or not thresholds:
+        return nan
+    out = scores.probability.brier_score_for_ensemble(
+        xr.DataArray(members, dims=(_PAIR, "member")),
+        xr.DataArray(obs, dims=(_PAIR,)),
+        "member",
+        list(thresholds),
+        preserve_dims=[_PAIR],
+        fair_correction=True,
+        event_threshold_operator=operator.ge,
+    )
+    out = out.transpose(_PAIR, "threshold").values.reshape(nan.shape)
+    ok = np.isfinite(members).all(axis=1) & np.isfinite(obs)
+    return np.where(ok[:, None], out, np.nan)
+
+
+def _rank_rows(
+    members: np.ndarray, obs: np.ndarray, rng: np.random.Generator
+) -> np.ndarray:
+    """Rank of the observation among the members, 0..M.
+
+    Members below it count; ties take a uniformly random share (0..ties), so an
+    exchangeable observation has a flat histogram even for zero-inflated
+    precipitation. One draw per row whatever the data, so the stream (and the
+    perturbations after it) does not depend on which rows are NaN.
+    """
+    o = obs[:, None]
+    less = (members < o).sum(axis=1)
+    ties = (members == o).sum(axis=1)
+    rank = less + np.floor(rng.random(obs.size) * (ties + 1))
+    ok = np.isfinite(members).all(axis=1) & np.isfinite(obs)
+    return np.where(ok, rank, np.nan)
+
+
+def _event_prob(members: np.ndarray, t: float) -> np.ndarray:
+    """Member fraction `>= t`, NaN where any member is not finite."""
+    ok = np.isfinite(members).all(axis=1)
+    return np.where(ok, (members >= t).mean(axis=1), np.nan)
+
+
+def pair_scores(
+    matched: xr.Dataset,
+    variable: str,
+    dz: Mapping[str, float] | None = None,
+    rng: np.random.Generator | None = None,
+) -> pd.DataFrame:
     """One row of score parts per (station, lead_hours, init) with an observation.
 
     Parameters
     ----------
     matched : xarray.Dataset
-        From `match_station_obs`.
+        From `match_station_obs` (or `match_reference`).
     variable : str
-        `SCORECARD_VARIABLES` key; its `threshold` and `scores` decide the
-        contingency flags and the Brier score.
+        `SCORECARD_VARIABLES` key; its `threshold`, `thresholds` and `scores`
+        decide the contingency flags and the Brier scores.
+    dz : mapping of str to float, optional
+        Station id -> model minus station elevation (m), `station_dz`; used for
+        2 m temperature only. A station missing (or NaN) here gets NaN
+        height-corrected and perturbed temperature scores, never a zero
+        correction.
+    rng : numpy.random.Generator, optional
+        Default `item_rng` of the matched attrs `store` and `init`.
 
     Returns
     -------
@@ -316,6 +471,21 @@ def pair_scores(matched: xr.Dataset, variable: str) -> pd.DataFrame:
         for a variable with no threshold: sum them for contingency counts.
         `brier` is the fair Brier score at the threshold (`>=`) for ensembles
         of a variable whose scores include it, NaN otherwise.
+
+        Temperature only: `dz`, and `err_hc` / `crps_hc` of the members plus
+        `0.0065 * dz` (TM865 Eq. 2). Temperature, wind and 24 h precipitation:
+        `crps_pert` (fair), `spread2_pert` (ddof=1) and `err_pert` (mean minus
+        observation) of the TM865 perturbed ensemble at the store's
+        `native_km` — temperature centred on the height-corrected value; a
+        single member is expanded to `SCORECARD_DETERMINISTIC_DRAWS` draws.
+        `rank` (0..`n_members`, NaN for one member) and `rank_pert`
+        (0..`n_members_pert`) place the observation among the members, ties
+        broken uniformly at random. `obs_persist` is the persistence
+        observation of `match_station_obs`. Per threshold t of `thresholds`
+        (suffix `threshold_key(t)`): `p_t`, `p_pert_t` member fractions
+        `>= t`, `wet_fc_t` / `wet_obs_t` flags, `brier_t` (fair, ensembles
+        only) and `brier_pert_t` (fair, perturbed). Columns a variable does
+        not use are NaN.
 
         Pairs with no finite observation give no row (never a zero). A pair
         whose forecast has a non-finite member is not scored either; their
@@ -338,14 +508,20 @@ def pair_scores(matched: xr.Dataset, variable: str) -> pd.DataFrame:
     if keep.size == 0:
         return _empty_pairs(dropped)
 
+    store = str(matched.attrs.get("store", ""))
+    if rng is None:
+        rng = item_rng(store, variable, matched.attrs["init"])
+
     # A plain integer pair index: scores' preserve_dims does not need the MultiIndex.
-    station = pairs["station"].values[keep]
+    station = pairs["station"].values[keep].astype(str)
     lead = pairs["lead_hours"].values[keep]
     sub = pairs.isel({_PAIR: keep}).drop_vars(["station", "lead_hours", _PAIR])
     sub = sub.assign_coords({_PAIR: np.arange(keep.size)})
     fc, fc_mean, obs = sub["fc"], sub["fc_mean"], sub["obs"]
     n_members = fc.sizes["member"]
     keep_dims = [_PAIR]
+    members = fc.transpose(_PAIR, "member").values
+    o = obs.values
 
     err = scores.continuous.additive_bias(fc_mean, obs, preserve_dims=keep_dims)
     ae = scores.continuous.mae(fc_mean, obs, preserve_dims=keep_dims)
@@ -383,13 +559,75 @@ def pair_scores(matched: xr.Dataset, variable: str) -> pd.DataFrame:
     else:
         brier = nan
 
+    # Height correction (2 m temperature only): t* = t + 0.0065 dz.
+    is_t2m = variable == "temperature_2m"
+    dz_pair = (
+        pd.Series(station).map(dict(dz)).to_numpy(dtype=float) if is_t2m and dz else nan
+    )
+    if is_t2m:
+        shift = obs_uncertainty.LAPSE_K_PER_M * dz_pair
+        crps_hc = _crps_rows(members + shift[:, None], o)
+        err_hc = fc_mean.values + shift - o
+    else:
+        crps_hc = err_hc = nan
+
+    # Draw order is fixed (raw ranks, perturbation, perturbed ranks) so the
+    # same item always gets the same numbers.
+    rank = _rank_rows(members, o, rng) if n_members > 1 else nan
+    delta_km = GRID_STORES.get(store, {}).get("native_km")
+    pert = None
+    if variable in obs_uncertainty.VARIABLES and delta_km is not None:
+        pert = obs_uncertainty.perturb(
+            members,
+            variable,
+            float(delta_km),
+            rng,
+            dz_m=dz_pair if is_t2m else None,
+            draws=SCORECARD_DETERMINISTIC_DRAWS if n_members == 1 else None,
+        )
+    elif variable in obs_uncertainty.VARIABLES:
+        logger.warning("%s has no native_km: no perturbed scores", store)
+    if pert is not None:
+        pert_ok = np.isfinite(pert).all(axis=1)
+        crps_pert = _crps_rows(pert, o)
+        spread2_pert = np.where(pert_ok, pert.var(axis=1, ddof=1), np.nan)
+        err_pert = np.where(pert_ok, pert.mean(axis=1), np.nan) - o
+        rank_pert = _rank_rows(pert, o, rng)
+        n_members_pert = np.full(keep.size, float(pert.shape[1]))
+    else:
+        crps_pert = spread2_pert = err_pert = rank_pert = n_members_pert = nan
+
+    per_threshold = {}
+    used = [float(t) for t in spec["thresholds"] or ()]
+    brier_t = _brier_rows(members, o, used)
+    brier_pert_t = (
+        _brier_rows(pert, o, used)
+        if pert is not None
+        else np.full_like(brier_t, np.nan)
+    )
+    for t in _THRESHOLDS:
+        k = threshold_key(t)
+        if t not in used:
+            for part in _THRESHOLD_PARTS:
+                per_threshold[f"{part}_{k}"] = nan
+            continue
+        j = used.index(t)
+        per_threshold[f"p_{k}"] = _event_prob(members, t)
+        per_threshold[f"p_pert_{k}"] = _event_prob(pert, t) if pert is not None else nan
+        per_threshold[f"wet_fc_{k}"] = (fc_mean.values >= t).astype(float)
+        per_threshold[f"wet_obs_{k}"] = (o >= t).astype(float)
+        per_threshold[f"brier_{k}"] = brier_t[:, j]
+        per_threshold[f"brier_pert_{k}"] = brier_pert_t[:, j]
+
+    obs_persist = sub["obs_persist"].values if "obs_persist" in sub else nan
+
     out = pd.DataFrame(
         {
-            "station": station.astype(str),
+            "station": station,
             "init": pd.Timestamp(matched.attrs["init"]),
             "lead_hours": lead,
             "valid_time": pd.to_datetime(sub["valid_time"].values),
-            "obs": obs.values,
+            "obs": o,
             "fc_mean": fc_mean.values,
             "err": err.values,
             "ae": ae.values,
@@ -399,6 +637,18 @@ def pair_scores(matched: xr.Dataset, variable: str) -> pd.DataFrame:
             "wet_fc": wet_fc,
             "wet_obs": wet_obs,
             "brier": brier,
+            "dz": dz_pair if is_t2m else nan,
+            "err_hc": err_hc,
+            "crps_hc": crps_hc,
+            "crps_pert": crps_pert,
+            "spread2_pert": spread2_pert,
+            "err_pert": err_pert,
+            "rank": rank,
+            "rank_pert": rank_pert,
+            "n_members": float(n_members),
+            "n_members_pert": n_members_pert,
+            "obs_persist": obs_persist,
+            **per_threshold,
         },
         columns=PAIR_COLUMNS,
     )
@@ -693,9 +943,12 @@ def _store_has(store: str, grid_variable: str) -> bool:
 def _needs_scoring(
     meta: dict | None, net_hash: str, obs_end: pd.Timestamp | None
 ) -> bool:
-    """Score when the file is missing, built on another network, or has leads
-    still awaiting observations that have since arrived."""
+    """Score when the file is missing, built on another network or row layout
+    (`SCORECARD_ROW_VERSION`), or has leads still awaiting observations that
+    have since arrived."""
     if meta is None or meta.get("network_hash") != net_hash:
+        return True
+    if meta.get("row_version") != SCORECARD_ROW_VERSION:
         return True
     if meta.get("complete") or obs_end is None:
         return False
@@ -777,6 +1030,15 @@ def _network(
     return net
 
 
+def _network_dz(net: pd.DataFrame) -> dict[str, float]:
+    """Station id -> ERA5 cell minus station elevation (m), NaN where unknown."""
+    ids = [str(i) for i in net["id"]]
+    if "elev_m" not in net:
+        return dict.fromkeys(ids, np.nan)
+    elev = {i: (None if pd.isna(e) else float(e)) for i, e in zip(ids, net["elev_m"])}
+    return dict(zip(ids, station_dz(ids, elev)))
+
+
 def refresh(
     stores: list[str] | tuple[str, ...],
     variables: list[str] | tuple[str, ...],
@@ -821,8 +1083,9 @@ def refresh(
 
     Notes
     -----
-    An init is scored when its file is missing, its network hash differs, or it
-    is incomplete and newer observations exist than it was scored with.
+    An init is scored when its file is missing, its network hash or row version
+    (`SCORECARD_ROW_VERSION`) differs, or it is incomplete and newer
+    observations exist than it was scored with.
     Rescoring finds the cube in station_cube's disk cache, so it reads
     nothing. A `GridDataError` (init absent, over budget, incomplete run) is
     logged and the item retried next run.
@@ -907,6 +1170,7 @@ def refresh(
                 )
                 continue
             subsets[variable] = (subset, scores_db.station_hash(subset))
+        dz = _network_dz(net)
 
         wanted = pd.date_range(first, last, freq="D") + pd.Timedelta(
             hours=SCORECARD_INIT_HOUR
@@ -1007,7 +1271,7 @@ def refresh(
                 matched = match_reference(cube, refs, variable)
             else:
                 matched = match_station_obs(cube, obs, variable)
-            rows = pair_scores(matched, variable)
+            rows = pair_scores(matched, variable, dz=dz)
             # The last *scored* lead: a GEFS cube runs to 840 h, scored to 360 h.
             scored = matched["lead_hours"].values <= SCORECARD_MAX_LEAD_HOURS
             last_valid = pd.Timestamp(matched["valid_time"].values[scored].max())
@@ -1019,6 +1283,7 @@ def refresh(
                 obs_end=item_end,
                 network_hash=net_hash,
                 complete=item_end is not None and last_valid <= item_end,
+                row_version=SCORECARD_ROW_VERSION,
             )
             written += 1
         status.report("Done", len(plan), len(plan))
@@ -1198,6 +1463,9 @@ _AGG_PAIR_COLUMNS: list[str] = [
     "wet_fc",
     "wet_obs",
     "brier",
+    # Task 4 columns, for the height-corrected / TM865 / rank / persistence views.
+    "obs",
+    *PAIR_COLUMNS[PAIR_COLUMNS.index("dz") :],
 ]
 
 
@@ -1258,7 +1526,8 @@ def write_aggregates(today: pd.Timestamp) -> Path:
         rows = scores_db.load_rows(SCORECARD_STORES, [variable], first, last)
         if rows.empty:
             continue
-        rows = rows[_AGG_PAIR_COLUMNS]
+        # reindex: a file of an older row version lacks the new columns (NaN).
+        rows = rows.reindex(columns=_AGG_PAIR_COLUMNS)
         stores_present |= set(rows["store"].unique())
         stations |= set(rows["station"].astype(str).unique())
         inits += [rows["init"].min(), rows["init"].max()]
@@ -1341,12 +1610,17 @@ OROGRAPHY_PATH: Path = (
 
 @functools.lru_cache(maxsize=1)
 def _read_orography(path: Path) -> dict[str, float]:
+    """Station id -> `z_m`; a cell whose `z_m` is null is left out. Never raises."""
     try:
         cells = json.loads(path.read_text())["cells"]
-        return {sid: float(c["z_m"]) for sid, c in cells.items()}
+        return {
+            str(sid): float(c["z_m"])
+            for sid, c in cells.items()
+            if c.get("z_m") is not None
+        }
     except FileNotFoundError:
         logger.warning("No station orography at %s: height corrections are NaN", path)
-    except (ValueError, KeyError, TypeError) as err:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
         logger.warning("Unreadable station orography %s (%s)", path, err)
     return {}
 
@@ -1359,12 +1633,13 @@ def station_orography() -> dict[str, float]:
 def station_dz(ids: list[str], elev: dict[str, float]) -> np.ndarray:
     """`z_m - elev_m` per station id (m); NaN where either is missing.
 
-    A positive value is a cell higher than the station (model too high).
+    A positive value is a cell higher than the station (model too high). A
+    None or NaN elevation counts as missing, never as 0 m.
     """
     z = station_orography()
     out = np.full(len(ids), np.nan)
     for i, sid in enumerate(ids):
         zm, e = z.get(sid), elev.get(sid)
-        if zm is not None and e is not None:
+        if zm is not None and e is not None and np.isfinite(float(e)):
             out[i] = zm - float(e)
     return out

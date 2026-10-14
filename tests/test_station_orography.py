@@ -115,3 +115,54 @@ def test_missing_file_is_empty_and_logged_once(tmp_path, monkeypatch, caplog):
 
 def test_scorecard_stations_unchanged():
     assert len(SCORECARD_STATIONS) == 8
+
+
+# --- Task 3 review minors ---------------------------------------------------------
+
+
+def test_builder_g_is_standard_gravity():
+    assert bso.G == 9.80665
+
+
+def test_extract_cells_accepts_0_360_longitudes():
+    lat = np.array([51.75, 51.5, 51.25])
+    lon = np.array([359.25, 359.5, 359.75, 0.0, 0.25])
+    z = np.arange(15, dtype=float).reshape(3, 5) * bso.G
+    ds = xr.Dataset({"z": (("latitude", "longitude"), z)},
+                    coords={"latitude": lat, "longitude": lon})
+    st = pd.DataFrame({"id": ["A"], "lat": [51.47], "lon": [-0.46], "elev_m": [25.3]})
+    out = bso.extract_cells(ds, st, "d")
+    # -0.5 is 359.5: row 51.5 (index 1), column 1 -> 1 * 5 + 1
+    assert out["cells"]["A"]["lon"] == -0.5 and out["cells"]["A"]["z_m"] == 6.0
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["{not json", json.dumps({"cells": ["A"]}), json.dumps(["x"]), ""],
+)
+def test_malformed_orography_is_empty_never_raises(tmp_path, monkeypatch, content):
+    p = tmp_path / "o.json"
+    p.write_text(content)
+    _point(monkeypatch, p)
+    assert scorecard.station_orography() == {}
+    scorecard._read_orography.cache_clear()
+
+
+def test_orography_path_a_directory_is_empty(tmp_path, monkeypatch):
+    _point(monkeypatch, tmp_path)
+    assert scorecard.station_orography() == {}
+    scorecard._read_orography.cache_clear()
+
+
+def test_station_dz_none_is_missing(tmp_path, monkeypatch):
+    p = tmp_path / "o.json"
+    p.write_text(json.dumps({"cells": {"A": {"z_m": 110.0}, "B": {"z_m": None}}}))
+    _point(monkeypatch, p)
+    assert scorecard.station_orography() == {"A": 110.0}  # B's null cell is skipped
+    dz = scorecard.station_dz(["A", "A", "B"], {"A": 100.0})
+    assert dz[0] == 10.0
+    dz = scorecard.station_dz(["A", "B"], {"A": None, "B": 1.0})
+    assert np.isnan(dz).all()
+    dz = scorecard.station_dz(["A"], {"A": float("nan")})
+    assert np.isnan(dz).all()
+    scorecard._read_orography.cache_clear()

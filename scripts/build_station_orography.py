@@ -106,6 +106,10 @@ def extract_cells(ds: xr.Dataset, stations: pd.DataFrame, retrieved: str) -> dic
         if dim in z.dims:
             z = z.isel({dim: 0}, drop=True)
     z = z / G
+    # A 0..360 grid is put on -180..180, the convention of `snap_cells`.
+    z = z.assign_coords(longitude=((z["longitude"] + 180.0) % 360.0) - 180.0).sortby(
+        "longitude"
+    )
     lat_c, lon_c = snap_cells(stations["lat"].to_numpy(), stations["lon"].to_numpy())
     cells = {}
     for sid, la, lo, elev in zip(stations["id"], lat_c, lon_c, stations["elev_m"]):

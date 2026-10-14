@@ -442,3 +442,79 @@ def test_aggregates_rewritten_when_pruning_removed_files_and_nothing_was_written
         "gfs", "temperature_2m", pd.Timestamp("2026-09-22")
     ).exists()
     assert scorecard.load_aggregates()[1]["start"] == "2026-09-23"
+
+
+# --- Task 4: row version and rescoring from the cached cube -------------------------
+
+from utils import earthmover_api  # noqa: E402
+from utils.earthmover_api import station_cube as _real_station_cube  # noqa: E402
+from utils.settings import SCORECARD_ROW_VERSION  # noqa: E402
+
+
+def test_row_version_is_written(env):
+    scorecard.refresh(("gfs",), VARS, TODAY)
+    meta = scores_db.scorecard_meta("gfs", "temperature_2m", TODAY - pd.Timedelta(days=3))
+    assert meta["row_version"] == SCORECARD_ROW_VERSION == 2
+
+
+def test_needs_scoring_on_row_version():
+    meta = {"network_hash": "h", "complete": True, "row_version": SCORECARD_ROW_VERSION}
+    assert not scorecard._needs_scoring(meta, "h", None)
+    assert scorecard._needs_scoring({**meta, "row_version": 1}, "h", None)
+    old = {k: v for k, v in meta.items() if k != "row_version"}
+    assert scorecard._needs_scoring(old, "h", None)
+
+
+def test_row_version_bump_rescores_every_init_from_the_disk_cache(
+    env, monkeypatch, tmp_path
+):
+    # The real station_cube, served from its disk cache: any archive open counts.
+    monkeypatch.setattr(earthmover_api, "POINT_CACHE_DIR", str(tmp_path / "cache"))
+    opened = []
+
+    def no_archive(store):
+        opened.append(store)
+        raise AssertionError("archive opened")
+
+    monkeypatch.setattr(earthmover_api, "_open_dataset", no_archive)
+    monkeypatch.setattr(earthmover_api, "station_cube", _real_station_cube)
+    for init in _inits(SCORECARD_DAYS + 2):
+        cube = _cube("gfs", "temperature_2m", init, env.net, None, env.leads)
+        cube.attrs.update(dropped_outside_domain=0, res_deg=0.25, step_type="instant")
+        path = earthmover_api._station_cache_path(
+            "gfs", "temperature_2m", init, env.net, None, None
+        )
+        earthmover_api._save_station_cube(cube, path)
+
+    monkeypatch.setattr(scorecard, "SCORECARD_ROW_VERSION", 1)
+    assert scorecard.refresh(("gfs",), VARS, TODAY) == SCORECARD_DAYS
+    assert scorecard.refresh(("gfs",), VARS, TODAY) == 0  # same version: skipped
+    monkeypatch.setattr(scorecard, "SCORECARD_ROW_VERSION", 2)
+    assert scorecard.refresh(("gfs",), VARS, TODAY) == SCORECARD_DAYS  # mismatch
+    assert opened == []
+    meta = scores_db.scorecard_meta("gfs", "temperature_2m", TODAY - pd.Timedelta(days=3))
+    assert meta["row_version"] == 2
+    rows = pd.read_parquet(scores_db.scorecard_path("gfs", "temperature_2m",
+                                                    TODAY - pd.Timedelta(days=3)))
+    assert list(rows.columns[: len(scorecard.PAIR_COLUMNS)]) == scorecard.PAIR_COLUMNS
+
+
+def test_height_correction_uses_the_network_elevation(env, monkeypatch):
+    monkeypatch.setattr(scorecard, "station_orography", lambda: {"A": 200.0})
+    scorecard.refresh(("ifs_ens",), VARS, TODAY)
+    rows = pd.read_parquet(scores_db.scorecard_path("ifs_ens", "temperature_2m",
+                                                    TODAY - pd.Timedelta(days=3)))
+    a, b = rows[rows["station"] == "A"], rows[rows["station"] == "B"]
+    assert (a["dz"] == 100.0).all()  # z 200 m - elev 100 m
+    np.testing.assert_allclose(a["err_hc"], a["err"] + 0.65)
+    assert b["dz"].isna().all() and b["crps_hc"].isna().all()
+
+
+def test_aggregates_read_old_files_without_the_new_columns(env, monkeypatch):
+    scorecard.refresh(("gfs",), VARS, TODAY)
+    path = scores_db.scorecard_path("gfs", "temperature_2m", TODAY - pd.Timedelta(days=3))
+    rows = pd.read_parquet(path)
+    rows[["station", "init", "lead_hours", "store", "variable", "err", "ae", "se",
+          "crps", "spread2", "wet_fc", "wet_obs", "brier"]].to_parquet(path)
+    scorecard.write_aggregates(TODAY)  # a v1 file must not break the aggregation
+    assert "crps_pert" in scorecard._AGG_PAIR_COLUMNS

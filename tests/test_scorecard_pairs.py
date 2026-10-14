@@ -265,10 +265,10 @@ def test_brier_nan_for_deterministic_and_non_brier_variables():
 
 def test_row_columns_and_init():
     rows = scorecard.pair_scores(_matched([[1.0], [2.0]], [1.0]), "temperature_2m")
-    assert list(rows.columns) == [
+    assert list(rows.columns[:14]) == [
         "station", "init", "lead_hours", "valid_time", "obs", "fc_mean",
         "err", "ae", "se", "crps", "spread2", "wet_fc", "wet_obs", "brier",
-    ]
+    ]  # the original layout leads; Task 4 columns follow
     assert rows["init"].iloc[0] == INIT
     assert rows["valid_time"].iloc[0] == INIT + pd.Timedelta("6h")
     assert rows["station"].iloc[0] == "S1"
@@ -293,3 +293,198 @@ def test_wet_flag_survives_a_float32_cube(monkeypatch):
     assert m["fc"].dtype == np.float64
     rows = scorecard.pair_scores(m, V24)
     assert list(rows["wet_fc"]) == [1.0]
+
+
+# --- Task 4: height correction, TM865 perturbation, ranks, persistence ------------
+
+from utils.settings import SCORECARD_DETERMINISTIC_DRAWS  # noqa: E402
+
+
+def _many(fc, obs, stations, leads, variable="temperature_2m", store="ifs_ens"):
+    """fc (station, member, lead), obs (station, lead) -> matched dataset."""
+    cube = _cube(fc, leads, stations=stations, variable=variable)
+    cube.attrs["store"] = store
+    times = INIT + pd.to_timedelta(leads, unit="h")
+    col = SCORECARD_VARIABLES[variable]["obs"]
+    by = {s: _obs(times, **{col: obs[i]}) for i, s in enumerate(stations)}
+    return scorecard.match_station_obs(cube, by, variable)
+
+
+def test_threshold_key():
+    assert scorecard.threshold_key(1.0) == "1"
+    assert scorecard.threshold_key(0.5) == "0.5"
+    assert scorecard.threshold_key(10) == "10"
+
+
+def test_new_columns_present():
+    rows = scorecard.pair_scores(_matched([[1.0], [2.0]], [1.0]), "temperature_2m")
+    for col in ("dz", "err_hc", "crps_hc", "crps_pert", "spread2_pert", "err_pert",
+                "rank", "rank_pert", "n_members", "n_members_pert", "obs_persist",
+                "p_1", "p_pert_1", "wet_fc_5", "wet_obs_10", "brier_1",
+                "brier_pert_10"):
+        assert col in rows.columns, col
+    assert list(rows.columns) == scorecard.PAIR_COLUMNS
+
+
+def test_rank_extremes():
+    m = _matched([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], [100.0, -100.0])
+    rows = scorecard.pair_scores(m, "temperature_2m")
+    assert list(rows["rank"]) == [3.0, 0.0]
+    assert (rows["n_members"] == 3).all()
+
+
+def _flat(ranks, m, tol):
+    counts = np.bincount(ranks.astype(int), minlength=m + 1)
+    expected = len(ranks) / (m + 1)
+    assert counts.size == m + 1
+    assert np.abs(counts / expected - 1).max() < tol, counts
+
+
+def test_rank_histogram_flat_for_exchangeable_obs():
+    rng = np.random.default_rng(1)
+    stations = [f"S{i}" for i in range(200)]
+    leads = np.arange(6, 366, 6.0)
+    m = 9
+    fc = rng.normal(size=(200, m, leads.size))
+    obs = rng.normal(size=(200, leads.size))
+    rows = scorecard.pair_scores(_many(fc, obs, stations, leads), "temperature_2m")
+    assert len(rows) == 200 * leads.size
+    _flat(rows["rank"].to_numpy(), m, 0.15)
+
+
+def test_rank_ties_broken_uniformly():
+    # Integer draws: most obs tie with members; random tie-breaking keeps it flat.
+    rng = np.random.default_rng(2)
+    stations = [f"S{i}" for i in range(200)]
+    leads = np.arange(6, 366, 6.0)
+    m = 5
+    fc = rng.integers(0, 3, size=(200, m, leads.size)).astype(float)
+    obs = rng.integers(0, 3, size=(200, leads.size)).astype(float)
+    rows = scorecard.pair_scores(_many(fc, obs, stations, leads), "temperature_2m")
+    _flat(rows["rank"].to_numpy(), m, 0.15)
+
+
+def test_crps_hc_is_crps_of_members_plus_lapse_shift():
+    fc = np.array([[1.0, 4.0], [2.0, 5.0], [6.0, 3.0]])
+    obs = [2.0, 4.5]
+    rows = scorecard.pair_scores(_matched(fc, obs), "temperature_2m",
+                                 dz={"S1": 100.0})
+    expected = [verification.fair_crps(fc[:, i] + 0.65, obs[i]) for i in range(2)]
+    np.testing.assert_allclose(rows["crps_hc"], expected, atol=1e-12)
+    np.testing.assert_allclose(rows["err_hc"], fc.mean(0) + 0.65 - obs, atol=1e-12)
+    assert (rows["dz"] == 100.0).all()
+
+
+def test_deterministic_store_perturbed_draws():
+    m = _matched([[3.0, -1.0]], [1.0, 2.0])
+    m.attrs["store"] = "gfs"
+    rows = scorecard.pair_scores(m, "temperature_2m", dz={"S1": 20.0})
+    assert (rows["n_members"] == 1).all()
+    assert SCORECARD_DETERMINISTIC_DRAWS == 50
+    assert (rows["n_members_pert"] == 50).all()
+    assert np.isfinite(rows["crps_pert"]).all()
+    assert np.isfinite(rows["spread2_pert"]).all() and (rows["spread2_pert"] > 0).all()
+    assert rows["rank"].isna().all()
+    assert rows["rank_pert"].between(0, 50).all()
+    wind = scorecard.pair_scores(_matched([[3.0, 5.0]], [1.0, 2.0],
+                                          "wind_speed_10m"), "wind_speed_10m")
+    assert np.isfinite(wind["crps_pert"]).all()
+
+
+def test_station_without_dz_has_nan_corrections_only_there():
+    rng = np.random.default_rng(3)
+    stations = ["S1", "S2"]
+    leads = np.array([6.0, 12.0])
+    fc = rng.normal(10, 1, size=(2, 4, 2))
+    obs = rng.normal(10, 1, size=(2, 2))
+    rows = scorecard.pair_scores(_many(fc, obs, stations, leads), "temperature_2m",
+                                 dz={"S1": 30.0})
+    s1, s2 = rows[rows["station"] == "S1"], rows[rows["station"] == "S2"]
+    for col in ("err_hc", "crps_hc", "crps_pert", "err_pert", "spread2_pert",
+                "rank_pert", "dz"):
+        assert s2[col].isna().all(), col
+        assert np.isfinite(s1[col]).all(), col
+    assert np.isfinite(s2["crps"]).all()  # raw scores unaffected
+
+
+def test_corrections_nan_without_any_dz_and_for_other_variables():
+    rows = scorecard.pair_scores(_matched([[1.0], [2.0]], [1.0]), "temperature_2m")
+    assert rows[["dz", "err_hc", "crps_hc", "crps_pert"]].isna().all().all()
+    wind = scorecard.pair_scores(_matched([[1.0], [2.0]], [1.0], "wind_speed_10m"),
+                                 "wind_speed_10m", dz={"S1": 30.0})
+    assert wind[["dz", "err_hc", "crps_hc"]].isna().all().all()
+    assert np.isfinite(wind["crps_pert"]).all()
+
+
+def test_perturbation_reproducible_and_seeded_per_item():
+    m = _matched(np.random.default_rng(4).normal(size=(10, 3)), [0.1, 0.2, 0.3],
+                 "wind_speed_10m")
+    a = scorecard.pair_scores(m, "wind_speed_10m")
+    b = scorecard.pair_scores(m, "wind_speed_10m")
+    pd.testing.assert_frame_equal(a, b)
+    other = m.copy()
+    other.attrs = {**m.attrs, "init": (INIT + pd.Timedelta("1D")).isoformat()}
+    c = scorecard.pair_scores(other, "wind_speed_10m")
+    assert not np.allclose(a["crps_pert"], c["crps_pert"])
+
+
+def test_obs_persist_lead_30_and_6():
+    leads = [6.0, 24.0, 30.0]
+    cube = _cube(np.zeros((1, 2, 3)), leads)
+    times = pd.date_range(INIT - pd.Timedelta("3D"), INIT + pd.Timedelta("2D"), freq="h")
+    values = (times - INIT) / pd.Timedelta("1h")  # hours relative to init
+    m = scorecard.match_station_obs(cube, {"S1": _obs(times, temperature_2m=values)},
+                                    "temperature_2m")
+    persist = m["obs_persist"].sel(station="S1").values
+    # lead 6: valid - 24 h = init - 18 h; lead 24: init; lead 30: valid - 48 h.
+    np.testing.assert_allclose(persist, [-18.0, 0.0, -18.0])
+    assert (persist <= 0).all()
+    rows = scorecard.pair_scores(m, "temperature_2m")
+    np.testing.assert_allclose(rows["obs_persist"], [-18.0, 0.0, -18.0])
+
+
+def test_obs_persist_nan_without_a_report():
+    cube = _cube(np.zeros((1, 2, 1)), [6.0])
+    obs = _obs([INIT + pd.Timedelta("6h")], temperature_2m=[1.0])
+    m = scorecard.match_station_obs(cube, {"S1": obs}, "temperature_2m")
+    assert np.isnan(m["obs_persist"].item(0))
+
+
+def test_precip_obs_persist_is_the_reported_total_ending_then():
+    cube = _cube([[[1.0]]], [30], variable=V24, window=24)
+    prev = INIT - pd.Timedelta("18h")  # 06 UTC the day before init: valid - 48 h
+    obs = _obs([prev, END30], precip_total_24h=[4.0, 2.5],
+               precipitation_1h=[np.nan, np.nan])
+    m = scorecard.match_station_obs(cube, {"S1": obs}, V24)
+    assert m["obs_persist"].item(0) == 4.0
+
+
+def test_precip_thresholds_columns():
+    # 4 members: 0, 2, 6, 12 mm; obs 7 mm.
+    fc = [[0.0], [2.0], [6.0], [12.0]]
+    rows = scorecard.pair_scores(_matched(fc, [7.0], V24), V24)
+    r = rows.iloc[0]
+    assert (r["p_1"], r["p_5"], r["p_10"]) == (0.75, 0.5, 0.25)
+    assert (r["wet_fc_1"], r["wet_fc_5"], r["wet_fc_10"]) == (1.0, 1.0, 0.0)
+    assert (r["wet_obs_1"], r["wet_obs_5"], r["wet_obs_10"]) == (1.0, 1.0, 0.0)
+    m = 4
+    for t, i, o in ((1, 3, 1), (5, 2, 1), (10, 1, 0)):
+        expected = (i / m - o) ** 2 - i * (m - i) / (m**2 * (m - 1))
+        assert r[f"brier_{t}"] == pytest.approx(expected)
+        assert 0.0 <= r[f"p_pert_{t}"] <= 1.0
+        assert np.isfinite(r[f"brier_pert_{t}"])
+    # headline columns unchanged, at threshold 1
+    assert r["brier"] == pytest.approx(r["brier_1"])
+    assert r["wet_fc"] == r["wet_fc_1"]
+
+
+def test_precip_deterministic_brier_raw_nan_perturbed_finite():
+    rows = scorecard.pair_scores(_matched([[6.0]], [7.0], V24), V24)
+    r = rows.iloc[0]
+    assert np.isnan(r["brier_5"]) and r["p_5"] == 1.0
+    assert np.isfinite(r["brier_pert_5"]) and r["n_members_pert"] == 50
+
+
+def test_threshold_columns_nan_for_temperature():
+    rows = scorecard.pair_scores(_matched([[1.0], [2.0]], [1.0]), "temperature_2m")
+    assert rows[["p_1", "p_pert_5", "brier_10", "wet_obs_1"]].isna().all().all()

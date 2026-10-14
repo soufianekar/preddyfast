@@ -133,11 +133,13 @@ def save_scorecard_init(
     obs_end: pd.Timestamp | None,
     network_hash: str,
     complete: bool,
+    row_version: int | None = None,
 ) -> Path:
     """Write one init's rows and metadata atomically, replacing any earlier file.
 
     `rows` is `pair_scores` output; `store` and `variable` columns are added and
-    `rows.attrs["dropped_nan_fc"]` is recorded. The file is written to a
+    `rows.attrs["dropped_nan_fc"]` and `row_version` (the pair-row layout,
+    `SCORECARD_ROW_VERSION`) are recorded. The file is written to a
     temporary name and renamed, so a reader never sees half a file.
     """
     path = scorecard_path(store, variable, init)
@@ -150,6 +152,7 @@ def save_scorecard_init(
         "complete": bool(complete),
         "n_pairs": len(out),
         "dropped_nan_fc": int(rows.attrs.get("dropped_nan_fc", 0)),
+        "row_version": row_version,
     }
     table = pa.Table.from_pandas(out, preserve_index=False)
     table = table.replace_schema_metadata(

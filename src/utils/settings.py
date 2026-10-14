@@ -1918,6 +1918,9 @@ SCORECARD_STORES: tuple[str, ...] = (
 SCORECARD_RNG_SEED: int = 20201110
 # Perturbed draws a deterministic store is expanded to, to stay CRPS-comparable.
 SCORECARD_DETERMINISTIC_DRAWS: int = 50
+# Layout of the stored pair rows; a file written with another version is
+# rescored (from the cached station cubes) on the next refresh.
+SCORECARD_ROW_VERSION: int = 2
 SCORECARD_DAYS: int = 14
 SCORECARD_INIT_HOUR: int = 0
 SCORECARD_MAX_STATIONS: int = 200
