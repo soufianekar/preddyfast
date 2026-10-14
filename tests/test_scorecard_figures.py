@@ -751,3 +751,80 @@ def test_lead_and_station_figures_name_their_mode():
         df, "temperature_2m", "rmse", CTX, mode="representativeness"
     )
     assert MODE_REP in figures.figure_text(station)
+
+
+# --- Task 6 fix round 1 ---------------------------------------------------------
+
+
+def test_sig_rows_of_another_variable_never_mark_this_one():
+    table = _table(low=())
+    sig = pd.DataFrame(
+        {
+            "variable": ["wind_speed_10m", "temperature_2m"],
+            "store": ["gefs", "gefs"],
+            "lead_day": [5, 5],
+            "diff": [0.4, 0.1],
+            "lo": [0.2, -0.1],
+            "hi": [0.6, 0.3],
+            "sig": [1.0, 0.0],
+        }
+    )
+    fig = figures.make_scorecard_fig(
+        table, "temperature_2m", "rmse", True, CTX, sig=sig
+    )
+    (dots,) = [t for t in fig.data if t.name == "significant at 95 %"]
+    assert len(dots.x) == 0
+    h = _heat(fig)
+    row = list(h.y).index(GRID_STORES["gefs"]["label"])
+    assert h.customdata[row][4][5].startswith("not significant")
+
+
+def test_long_footer_is_wrapped_and_keeps_every_clause():
+    table = _rank(mode="representativeness")
+    ctx = _ctx(period_days=14, height_corrected_excluded=3)
+    fig = figures.make_rank_histogram_fig(
+        table, "temperature_2m", 1, "representativeness", context=ctx
+    )
+    (note,) = [a for a in fig.layout.annotations if a.name == figures.PROVENANCE]
+    lines = note.text.split("<br>")
+    assert all(len(line) <= 110 for line in lines)
+    flat = " ".join(lines)
+    for clause in (
+        MODE_REP,
+        "temperature centred on the height-corrected value",
+        "3 stations without elevation or orography excluded",
+        "U-shape = under-dispersive, ∩ = over-dispersive, slope = bias",
+    ):
+        assert clause in flat, clause
+
+
+def test_wrap_footer_never_drops_words():
+    long = " · ".join(["alpha beta gamma delta"] * 12) + " · " + "x" * 30
+    out = figures._wrap_footer([long, "short"])
+    assert all(len(line) <= 110 for line in out)
+    assert out[-1] == "short"
+    assert (
+        " ".join(out[:-1]).replace(" · ", " ").split()
+        == long.replace(" · ", " ").split()
+    )
+
+
+def test_precipitation_footer_names_the_window_not_synoptic_hours():
+    precip = figures.figure_text(
+        figures.make_roc_fig(_roc(), "precipitation_24h", 1.0, "1-3", "raw")
+    )
+    assert "Every model scored on 24 h windows ending 06 UTC" in precip
+    assert "00/06/12/18 UTC valid times" not in precip
+    t2m = figures.figure_text(
+        figures.make_scorecard_fig(_table(), "temperature_2m", "rmse", False, CTX)
+    )
+    assert "scored at 00/06/12/18 UTC valid times" in t2m
+
+
+def test_reliability_axes_padded_and_sharpness_on_decades():
+    fig = figures.make_reliability_fig(
+        _reliability(), "precipitation_24h", 1.0, "1-3", "raw"
+    )
+    assert fig.layout.yaxis.range[1] > 1.0
+    assert fig.layout.yaxis2.type == "log" and fig.layout.yaxis2.dtick == 1
+    assert "%" in fig.layout.yaxis2.tickformat

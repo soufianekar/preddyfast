@@ -110,6 +110,7 @@ _TS_AXIS_PX = {"date": 64, "linear": 50}  # tick labels (two lines on dates) + a
 _TS_LEGEND_ROW_PX = 29        # measured: a 12 px legend row plus its gap
 _TS_GAP_PX = 8             # between the legend and the footer
 _TS_FOOTER_LINE_PX = 15
+_FOOTER_WRAP_CHARS = 110  # an 11 px footer line fits ~1000 px at this length
 _TS_PAD_PX = 10
 _TS_NOMINAL_WIDTH_PX = 860  # plot width assumed when wrapping the legend
 
@@ -124,6 +125,34 @@ def _legend_rows(fig: go.Figure) -> int:
             rows, used = rows + 1, 0.0
         used += width
     return rows
+
+
+def _wrap_footer(lines: list[str], width: int = _FOOTER_WRAP_CHARS) -> list[str]:
+    """Split footer lines longer than `width` at " · ", then at spaces.
+
+    An annotation does not wrap: a long line is cut off at the figure's edge,
+    and a disclosure at its end is lost. Clauses are never dropped.
+    """
+    out: list[str] = []
+    for line in lines:
+        current = ""
+        for part in line.split(" · "):
+            joined = f"{current} · {part}" if current else part
+            if len(joined) <= width:
+                current = joined
+                continue
+            if current:
+                out.append(current)
+            current = ""
+            for word in part.split(" "):
+                joined = f"{current} {word}" if current else word
+                if len(joined) > width and current:
+                    out.append(current)
+                    joined = word
+                current = joined
+        if current:
+            out.append(current)
+    return out
 
 
 def _frame_timeseries(
@@ -150,6 +179,7 @@ def _frame_timeseries(
     x_kind : str
         "date" (two-line tick labels) or "linear".
     """
+    provenance = _wrap_footer(provenance)
     axis_px = _TS_AXIS_PX[x_kind]
     footer_top = axis_px + _legend_rows(fig) * _TS_LEGEND_ROW_PX + _TS_GAP_PX
     footer_px = len(provenance) * _TS_FOOTER_LINE_PX
@@ -2284,7 +2314,14 @@ def _scorecard_frame_text(
                 SCORECARD_LEAD_STEP_HOURS,
             )
         )
-        sampling = f"Every model scored at {hours} UTC valid times · {_FEW_RUNS_NOTE}"
+        if spec["window_hours"] and not spec.get("hourly_fallback", True):
+            when = (
+                f"on {spec['window_hours']} h windows ending "
+                f"{spec['window_end_hour']:02d} UTC"
+            )
+        else:
+            when = f"at {hours} UTC valid times"
+        sampling = f"Every model scored {when} · {_FEW_RUNS_NOTE}"
     corrected = applied and mode != "raw" and variable == "temperature_2m"
     lines = [
         f"{match} · {_FORECAST_SOURCE}",
@@ -2355,6 +2392,8 @@ def _score_scale(score: str, values: np.ndarray) -> dict:
 def _significance_cells(
     sig: pd.DataFrame | None,
     stored: pd.DataFrame | None,
+    variable: str,
+    mode: str,
     score: str,
     unit: str,
     stores: list[str],
@@ -2365,11 +2404,14 @@ def _significance_cells(
 
     `sig` (columns `diff, lo, hi, sig`) wins over the stored `lead_relative`
     columns `diff_/lo_/hi_/sig_{score}`. NaN `sig` is "not assessed" (too few
-    common runs), never "not significant".
+    common runs), never "not significant". `sig` rows of other variables or
+    modes are dropped first: the pivot keeps the first row per cell.
     """
     if sig is not None:
-        if "variable" in sig and stored is not None and "variable" in stored:
-            sig = sig[sig["variable"].isin(set(stored["variable"]))]
+        if "variable" in sig:
+            sig = sig[sig["variable"] == variable]
+        if "mode" in sig:
+            sig = sig[sig["mode"] == mode]
         frame = sig.rename(
             columns={c: f"{c}_{score}" for c in ("diff", "lo", "hi", "sig")}
         )
@@ -2497,7 +2539,9 @@ def make_scorecard_fig(
     labels = [GRID_STORES[s]["label"] for s in stores]
     base_label = GRID_STORES[context["baseline"]]["label"]
     sig_grid, sig_text = (
-        _significance_cells(sig, stored, score, unit, stores, context["baseline"], grid)
+        _significance_cells(
+            sig, stored, variable, mode, score, unit, stores, context["baseline"], grid
+        )
         if relative
         else (None, None)
     )
@@ -3324,15 +3368,18 @@ def _unit_square(fig: go.Figure, x_title: str, y_title: str) -> None:
         yref="y",
         line={"color": _NEUTRAL_MARK, "width": 1, "dash": "dash"},
     )
+    # Padded past 1 so points at 100 % are not drawn on the frame.
     fig.update_layout(
         xaxis={
-            "range": [0, 1],
+            "range": [0, 1.05],
+            "dtick": 0.2,
             "tickformat": ".0%",
             "title": {"text": x_title},
             "constrain": "domain",
         },
         yaxis={
-            "range": [0, 1],
+            "range": [0, 1.05],
+            "dtick": 0.2,
             "tickformat": ".0%",
             "title": {"text": y_title},
             "scaleanchor": "x",
@@ -3445,6 +3492,9 @@ def make_reliability_fig(
             "domain": [0.5, 1.0],
             "anchor": "x2",
             "type": "log",
+            "dtick": 1,
+            "tickformat": ".2~%",
+            "minor": {"showgrid": False, "ticks": ""},
             "title": {"text": "Share of forecasts (sharpness)", "font": {"size": 11}},
         },
     )
