@@ -218,6 +218,27 @@ def load_rows(
     return pd.concat(frames, ignore_index=True)
 
 
+def prune_unconfigured_variables(variables: list[str] | tuple[str, ...]) -> int:
+    """Delete scorecard files of any variable not in `variables`; returns how many.
+
+    A variable dropped from `SCORECARD_VARIABLES` (6 h precipitation, replaced
+    by the 24 h total) leaves rows nothing reads or refreshes.
+    """
+    keep = {_safe(v) for v in variables}
+    removed = 0
+    for folder in (Path(SCORES_DIR) / _SCORECARD_ROOT).glob("*/*"):
+        if not folder.is_dir() or folder.name in keep:
+            continue
+        for path in folder.glob("*.parquet"):
+            path.unlink(missing_ok=True)
+            removed += 1
+        try:
+            folder.rmdir()
+        except OSError:
+            pass  # something else is in it: leave the folder
+    return removed
+
+
 def prune_scorecard(before: pd.Timestamp) -> int:
     """Delete init files dated before `before`; returns how many were removed."""
     cutoff = pd.Timestamp(before).normalize()

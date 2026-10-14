@@ -101,7 +101,8 @@ def _window_obs(frame: pd.DataFrame, spec: dict, times: pd.Series) -> np.ndarray
 
     The station's own reported total first (`obs_reported`); else the sum of
     the window's hourly reports (`obs`), only when every hour reported. Never
-    a partial sum.
+    a partial sum. With `hourly_fallback` False (24 h precipitation) a day with
+    no reported total is NaN, whatever the hourly reports say.
     """
     hours = spec["window_hours"]
     ends = verification._naive_utc(times).reset_index(drop=True)
@@ -121,7 +122,7 @@ def _window_obs(frame: pd.DataFrame, spec: dict, times: pd.Series) -> np.ndarray
             )
             out = by_end.reindex(pd.DatetimeIndex(ends)).to_numpy(dtype=float)
 
-    if spec["obs"] in frame:
+    if spec.get("hourly_fallback", True) and spec["obs"] in frame:
         hourly = pd.DataFrame(
             {"valid_time": frame["valid_time"], "value": frame[spec["obs"]]}
         )
@@ -155,7 +156,8 @@ def match_station_obs(
     xarray.Dataset
         Dims `(station, lead_hours)` plus `member` for `fc`: `fc` (members),
         `fc_mean` (member mean), `obs` (NaN where none) and `valid_time`.
-        Leads beyond `SCORECARD_MAX_LEAD_HOURS` are dropped. Instants take the
+        Leads beyond `SCORECARD_MAX_LEAD_HOURS` are dropped, and for a window
+        variable with `window_end_hour` those not ending then. Instants take the
         report nearest the valid time within the variable's `tolerance`;
         window variables the reported total ending at the valid time, else a
         complete-hour sum. Attrs carry the cube's plus `scorecard_variable`.
@@ -173,6 +175,11 @@ def match_station_obs(
             f"{spec['reference']!r}); it is verified by the reference path"
         )
     cube = cube.sel(lead_hours=cube["lead_hours"] <= SCORECARD_MAX_LEAD_HOURS)
+    end_hour = spec.get("window_end_hour")
+    if spec["window_hours"] and end_hour is not None:
+        valid = pd.DatetimeIndex(pd.to_datetime(cube["valid_time"].values))
+        ends = (valid.hour == end_hour) & (valid.minute == 0)
+        cube = cube.isel(lead_hours=np.flatnonzero(ends))
     times = pd.Series(pd.to_datetime(cube["valid_time"].values))
 
     rows = []
@@ -418,14 +425,15 @@ def _div(num: np.ndarray, den: np.ndarray) -> np.ndarray:
 def contingency_scores(
     h: np.ndarray, m: np.ndarray, f: np.ndarray, cn: np.ndarray
 ) -> dict[str, np.ndarray]:
-    """ETS, HSS and frequency bias from summed hits, misses, false alarms and
+    """ETS, HSS, frequency bias, POD and FAR from summed hits, misses, false alarms and
     correct negatives.
 
     The dynamical.org formulas, identical to `scores.categorical.
     BinaryContingencyManager` (which takes events, not counts):
     ETS = (H - Hr) / (H + M + F - Hr), Hr = (H + M)(H + F) / n;
     HSS = 2(H·CN - F·M) / [(H + M)(M + CN) + (H + F)(F + CN)];
-    FB = (H + F) / (H + M). A zero denominator gives NaN.
+    FB = (H + F) / (H + M); POD = H / (H + M); FAR = F / (H + F) (false alarm
+    ratio, not rate). A zero denominator gives NaN.
     """
     h, m, f, cn = (np.asarray(x, dtype=float) for x in (h, m, f, cn))
     n = h + m + f + cn
@@ -434,6 +442,8 @@ def contingency_scores(
         "ets": _div(h - hr, h + m + f - hr),
         "hss": _div(2.0 * (h * cn - f * m), (h + m) * (m + cn) + (h + f) * (f + cn)),
         "frequency_bias": _div(h + f, h + m),
+        "pod": _div(h, h + m),
+        "far": _div(f, h + f),
     }
 
 
@@ -875,6 +885,7 @@ def refresh(
             f"{anchor:%Y-%m-%d}",
         )
         removed = scores_db.prune_scorecard(first)
+        removed += scores_db.prune_unconfigured_variables(tuple(SCORECARD_VARIABLES))
         if removed:
             logger.info(
                 "Removed %d scorecard file(s) older than %s",

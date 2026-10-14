@@ -221,6 +221,17 @@ def test_old_inits_are_deleted(env, tmp_path):
     assert not old.exists() and len(_files(tmp_path)) == SCORECARD_DAYS
 
 
+def test_rows_of_a_variable_no_longer_configured_are_pruned(env, tmp_path):
+    scorecard.refresh(("gfs",), VARS, TODAY)
+    stale = scores_db.scorecard_path("gfs", "precipitation_6h", TODAY)
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_bytes(b"x")
+    kept = scores_db.scorecard_path("gfs", "temperature_2m", TODAY - pd.Timedelta(days=1))
+    scorecard.refresh(("gfs",), VARS, TODAY, max_minutes=0)
+    assert not stale.exists() and not stale.parent.exists()
+    assert kept.exists()
+
+
 def test_network_selected_only_when_missing_old_or_reselect(env):
     scorecard.refresh(("gfs",), VARS, TODAY)
     assert env.selected == 1 and env.saved is not None
@@ -236,13 +247,13 @@ def test_network_selected_only_when_missing_old_or_reselect(env):
 def test_variable_the_store_lacks_is_skipped(env, monkeypatch, caplog):
     monkeypatch.setattr(scorecard.earthmover_api, "store_variables", lambda s: ["temperature_2m"])
     with caplog.at_level(logging.INFO):
-        n = scorecard.refresh(("gfs",), ("temperature_2m", "precipitation_6h"), TODAY)
+        n = scorecard.refresh(("gfs",), ("temperature_2m", "precipitation_24h"), TODAY)
     assert n == SCORECARD_DAYS
     assert "does not hold it" in caplog.text
 
 
 def test_precipitation_reads_its_accumulation(env):
-    scorecard.refresh(("gfs",), ("precipitation_6h",), TODAY, max_minutes=None)
+    scorecard.refresh(("gfs",), ("precipitation_24h",), TODAY, max_minutes=None)
     assert {c[1] for c in env.calls} == {"precipitation_surface"}
 
 

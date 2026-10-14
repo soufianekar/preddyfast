@@ -48,7 +48,7 @@ def _counts_rows(h, m, f, cn, store="ifs_ens"):
     wet_fc = [1.0] * h + [0.0] * m + [1.0] * f + [0.0] * cn
     wet_obs = [1.0] * h + [1.0] * m + [0.0] * f + [0.0] * cn
     stations = [f"S{i}" for i in range(len(wet_fc))]
-    return _rows(store=store, variable="precipitation_6h", stations=stations,
+    return _rows(store=store, variable="precipitation_24h", stations=stations,
                  wet_fc=wet_fc, wet_obs=wet_obs, brier=0.1)
 
 
@@ -95,7 +95,7 @@ def test_bias_corrected_rmse_of_constant_error_is_zero():
 
 def test_relative_to_lower_rmse_and_higher_ets_are_positive():
     agg = pd.DataFrame({
-        "variable": ["precipitation_6h"] * 2,
+        "variable": ["precipitation_24h"] * 2,
         "store": ["ifs_ens", "gefs"],
         "lead_day": [1, 1],
         "rmse": [2.0, 1.8],
@@ -173,7 +173,7 @@ def test_common_inits_drop_an_init_held_by_one_model_only():
 
 def test_relative_to_target_valued_scores():
     agg = pd.DataFrame({
-        "variable": ["precipitation_6h"] * 2,
+        "variable": ["precipitation_24h"] * 2,
         "store": ["ifs_ens", "gefs"],
         "lead_day": [1, 1],
         "bias": [0.4, -0.2],

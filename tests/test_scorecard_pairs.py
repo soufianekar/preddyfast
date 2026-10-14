@@ -80,39 +80,66 @@ def test_station_without_obs_is_nan():
     assert np.isnan(m["obs"].sel(station="S2").item(0))
 
 
-def test_precip_prefers_reported_total():
-    cube = _cube([[[1.0]]], [6], variable="precipitation_6h", window=6)
-    end = INIT + pd.Timedelta("6h")
-    hours = _hours(end, 6)
-    obs = _obs(hours, precipitation_1h=[1.0] * 6, precip_total_6h=[np.nan] * 5 + [2.5])
-    m = scorecard.match_station_obs(cube, {"S1": obs}, "precipitation_6h")
+V24 = "precipitation_24h"
+END30 = INIT + pd.Timedelta("30h")  # 06 UTC the next day
+
+
+def test_precip_uses_reported_24h_total():
+    cube = _cube([[[1.0]]], [30], variable=V24, window=24)
+    obs = _obs(_hours(END30, 24), precipitation_1h=[1.0] * 24,
+               precip_total_24h=[np.nan] * 23 + [2.5])
+    m = scorecard.match_station_obs(cube, {"S1": obs}, V24)
     assert m["obs"].item(0) == 2.5
 
 
-def test_precip_falls_back_to_complete_hourly_sum():
-    cube = _cube([[[1.0]]], [6], variable="precipitation_6h", window=6)
-    end = INIT + pd.Timedelta("6h")
-    obs = _obs(_hours(end, 6), precipitation_1h=[0.5, 0.0, 1.0, 0.0, 0.25, 0.25],
-               precip_total_6h=[np.nan] * 6)
-    m = scorecard.match_station_obs(cube, {"S1": obs}, "precipitation_6h")
-    assert m["obs"].item(0) == pytest.approx(2.0)
+def test_precip_never_falls_back_to_hourly_sums():
+    cube = _cube([[[1.0]]], [30], variable=V24, window=24)
+    obs = _obs(_hours(END30, 24), precipitation_1h=[0.5] * 24,
+               precip_total_24h=[np.nan] * 24)
+    m = scorecard.match_station_obs(cube, {"S1": obs}, V24)
+    assert np.isnan(m["obs"].item(0))
+    assert scorecard.pair_scores(m, V24).empty
 
 
-def test_precip_missing_hour_without_report_gives_no_row():
-    cube = _cube([[[1.0]]], [6], variable="precipitation_6h", window=6)
+def test_window_obs_reported_days_kept_and_hourly_only_day_is_nan():
+    spec = SCORECARD_VARIABLES[V24]
+    d1, d2, d3 = (pd.Timestamp(f"2026-09-0{d} 06:00") for d in (2, 3, 4))
+    frame = pd.concat([
+        _obs([d1, d3], precip_total_24h=[3.0, 0.0], precipitation_1h=[np.nan] * 2),
+        _obs(_hours(d2, 24), precip_total_24h=[np.nan] * 24,
+             precipitation_1h=[9.0 / 24] * 24),
+    ], ignore_index=True)
+    got = scorecard._window_obs(frame, spec, pd.Series([d1, d2, d3]))
+    assert got[0] == 3.0 and got[2] == 0.0
+    assert np.isnan(got[1])  # 9 mm of hourly reports is never used
+
+
+def test_other_window_variables_default_to_hourly_fallback():
+    spec = {"window_hours": 6, "obs": "precipitation_1h", "obs_reported": None}
     end = INIT + pd.Timedelta("6h")
-    hours = _hours(end, 6).delete(2)  # one hour of the six missing
-    obs = _obs(hours, precipitation_1h=[1.0] * 5, precip_total_6h=[np.nan] * 5)
-    m = scorecard.match_station_obs(cube, {"S1": obs}, "precipitation_6h")
-    assert np.isnan(m["obs"].item(0))  # never a partial sum
-    assert scorecard.pair_scores(m, "precipitation_6h").empty
+    frame = _obs(_hours(end, 6), precipitation_1h=[0.5] * 6)
+    got = scorecard._window_obs(frame, spec, pd.Series([end]))
+    assert got[0] == pytest.approx(3.0)
+
+
+def test_precip_keeps_only_leads_ending_at_06_utc():
+    leads = [6, 24, 30, 36, 54]
+    cube = _cube(np.ones((1, 1, 5)), leads, variable=V24, window=24)
+    m = scorecard.match_station_obs(cube, {}, V24)
+    assert list(m["lead_hours"].values) == [6, 30, 54]
 
 
 def test_report_not_ending_at_valid_time_is_not_used():
-    cube = _cube([[[1.0]]], [6], variable="precipitation_6h", window=6)
-    obs = _obs([INIT + pd.Timedelta("7h")], precip_total_6h=[3.0], precipitation_1h=[np.nan])
-    m = scorecard.match_station_obs(cube, {"S1": obs}, "precipitation_6h")
+    cube = _cube([[[1.0]]], [30], variable=V24, window=24)
+    obs = _obs([END30 + pd.Timedelta("1h")], precip_total_24h=[3.0],
+               precipitation_1h=[np.nan])
+    m = scorecard.match_station_obs(cube, {"S1": obs}, V24)
     assert np.isnan(m["obs"].item(0))
+
+
+def test_pod_and_far_directions():
+    from utils.settings import SCORE_DIRECTION
+    assert SCORE_DIRECTION["pod"] == "higher" and SCORE_DIRECTION["far"] == "lower"
 
 
 def test_variable_without_obs_is_refused():
@@ -138,7 +165,11 @@ def test_leads_beyond_360h_are_dropped():
 def _matched(fc, obs_values, variable="temperature_2m", leads=None):
     """A matched dataset for one station from fc (member, lead) and obs (lead)."""
     fc = np.asarray(fc, dtype=float)
-    leads = leads or [6 * (i + 1) for i in range(fc.shape[1])]
+    if leads is None:
+        end_hour = SCORECARD_VARIABLES[variable].get("window_end_hour")
+        # 06 UTC ends for a 24 h window variable, else every 6 h.
+        leads = [6 + 24 * (i + 1) if end_hour == 6 else 6 * (i + 1)
+                 for i in range(fc.shape[1])]
     window = SCORECARD_VARIABLES[variable]["window_hours"]
     cube = _cube(fc[None], leads, variable=variable, window=window)
     col = SCORECARD_VARIABLES[variable]["obs"]
@@ -204,27 +235,27 @@ def test_nan_forecast_pair_is_dropped_and_counted():
 
 
 def test_wet_flags_from_ensemble_mean_inclusive_threshold():
-    threshold = SCORECARD_VARIABLES["precipitation_6h"]["threshold"]
+    threshold = SCORECARD_VARIABLES[V24]["threshold"]
     # Leads: mean exactly at threshold (wet), mean just below (dry), mean well above.
     fc = [[threshold, threshold - 0.01, 0.0], [threshold, threshold - 0.01, 3.0]]
     obs = [threshold, 0.0, 0.59]
-    rows = scorecard.pair_scores(_matched(fc, obs, "precipitation_6h"), "precipitation_6h")
+    rows = scorecard.pair_scores(_matched(fc, obs, V24), V24)
     assert list(rows["wet_fc"]) == [1.0, 0.0, 1.0]
     assert list(rows["wet_obs"]) == [1.0, 0.0, 0.0]
 
 
 def test_brier_for_ensembles_fair_and_inclusive():
-    threshold = SCORECARD_VARIABLES["precipitation_6h"]["threshold"]
+    threshold = SCORECARD_VARIABLES[V24]["threshold"]
     # 1 of 4 members wet (one exactly at the threshold), obs wet.
     fc = [[threshold], [0.0], [0.0], [0.0]]
-    rows = scorecard.pair_scores(_matched(fc, [1.0], "precipitation_6h"), "precipitation_6h")
+    rows = scorecard.pair_scores(_matched(fc, [1.0], V24), V24)
     i, m = 1, 4
     expected = (i / m - 1) ** 2 - i * (m - i) / (m**2 * (m - 1))
     assert rows["brier"].iloc[0] == pytest.approx(expected)
 
 
 def test_brier_nan_for_deterministic_and_non_brier_variables():
-    det = scorecard.pair_scores(_matched([[1.0]], [1.0], "precipitation_6h"), "precipitation_6h")
+    det = scorecard.pair_scores(_matched([[1.0]], [1.0], V24), V24)
     assert det["brier"].isna().all()
     assert det["wet_fc"].iloc[0] == 1.0  # contingency counts still apply
     temp = scorecard.pair_scores(_matched([[1.0], [2.0]], [1.0]), "temperature_2m")
@@ -249,14 +280,16 @@ def test_no_valid_pairs_gives_empty_frame_with_columns():
     assert "crps" in rows.columns
 
 
-def test_wet_flag_survives_a_float32_cube():
+def test_wet_flag_survives_a_float32_cube(monkeypatch):
+    # 1.0 is exact in float32, so the ulp case needs a non-representable threshold.
+    monkeypatch.setitem(SCORECARD_VARIABLES, V24, {**SCORECARD_VARIABLES[V24], "threshold": 0.6})
     # station_cube returns float32. These members' exact mean is >= 0.6, but a
     # float32 mean lands one ulp below it and would flag the pair dry.
     members = np.array([0.6000002026557922, 0.6000000834465027, 0.599999725818634], dtype=np.float32)
-    cube = _cube(members.reshape(1, 3, 1), [6], variable="precipitation_6h", window=6)
+    cube = _cube(members.reshape(1, 3, 1), [30], variable=V24, window=24)
     cube = cube.astype("float32")
-    obs = _obs([INIT + pd.Timedelta("6h")], precipitation_1h=[0.0], precip_total_6h=[0.7])
-    m = scorecard.match_station_obs(cube, {"S1": obs}, "precipitation_6h")
+    obs = _obs([END30], precipitation_1h=[0.0], precip_total_24h=[0.7])
+    m = scorecard.match_station_obs(cube, {"S1": obs}, V24)
     assert m["fc"].dtype == np.float64
-    rows = scorecard.pair_scores(m, "precipitation_6h")
+    rows = scorecard.pair_scores(m, V24)
     assert list(rows["wet_fc"]) == [1.0]

@@ -61,6 +61,8 @@ _SCORE_NAMES = {
     "ets": "ETS",
     "hss": "HSS",
     "frequency_bias": "Frequency bias",
+    "pod": "POD",
+    "far": "FAR",
 }
 
 

@@ -13,9 +13,11 @@ def test_grid_variables_exist_and_derived_parts_are_store_components():
 
 
 def test_reported_total_column_is_the_ghcnh_internal_name():
-    entry = settings.SCORECARD_VARIABLES["precipitation_6h"]
-    assert entry["obs_reported"] == settings.GHCNH_FIELDS["precipitation_6_hour"]
-    others = [v for k, v in settings.SCORECARD_VARIABLES.items() if k != "precipitation_6h"]
+    entry = settings.SCORECARD_VARIABLES["precipitation_24h"]
+    assert entry["obs_reported"] == settings.GHCNH_FIELDS["precipitation_24_hour"]
+    others = [
+        v for k, v in settings.SCORECARD_VARIABLES.items() if k != "precipitation_24h"
+    ]
     assert all(v["obs_reported"] is None for v in others)
 
 
@@ -27,17 +29,25 @@ def test_stores_are_declared():
         assert store in settings.GRID_STORES
 
 
-def test_precipitation_threshold_is_rate_times_window():
-    entry = settings.SCORECARD_VARIABLES["precipitation_6h"]
-    assert entry["threshold"] == 0.1 * 6
-    assert entry["window_hours"] == 6
+def test_precipitation_is_a_24h_reported_total_ending_06_utc():
+    entry = settings.SCORECARD_VARIABLES["precipitation_24h"]
+    assert "precipitation_6h" not in settings.SCORECARD_VARIABLES
+    assert entry["window_hours"] == 24 and entry["window_end_hour"] == 6
+    assert entry["hourly_fallback"] is False
+    assert entry["obs"] == "precipitation_1h"
+    assert entry["thresholds"] == (1.0, 5.0, 10.0) and entry["threshold"] == 1.0
+    assert entry["scores"] == (
+        "mae", "bias", "crps", "ets", "hss", "frequency_bias", "brier", "pod", "far",
+    )
+    assert entry["completeness"] == 0.5 and entry["unit"] == "mm"
+    assert entry["label"] == "24 h precipitation (06–06 UTC)"
 
 
 def test_entries_share_keys():
     keys = [set(v) for v in settings.SCORECARD_VARIABLES.values()]
     assert all(k == keys[0] for k in keys)
     assert set(settings.SCORECARD_VARIABLES) == {
-        "temperature_2m", "precipitation_6h", "wind_speed_10m", "z500",
+        "temperature_2m", "precipitation_24h", "wind_speed_10m", "z500",
     }
 
 

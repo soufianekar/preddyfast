@@ -184,15 +184,15 @@ def test_invalid_score_for_variable_is_ignored_by_the_figure_callback(page):
 
 
 def test_changing_variable_resets_an_invalid_score(page):
-    data, value = page.options_for_variable("precipitation_6h", "rmse")
+    data, value = page.options_for_variable("precipitation_24h", "rmse")
     assert value == "mae" and "rmse" not in [o["value"] for o in data]
     assert page.options_for_variable("wind_speed_10m", "crps")[1] == "crps"
 
 
 def test_score_labels_carry_their_direction(page):
-    labels = {o["value"]: o["label"] for o in page._score_options("precipitation_6h")}
+    labels = {o["value"]: o["label"] for o in page._score_options("precipitation_24h")}
     assert labels["mae"] == "MAE (lower is better)"
-    assert labels["brier"] == "fair Brier ≥ 0.6 mm/6 h (lower is better)"
+    assert labels["brier"] == "fair Brier ≥ 1 mm/24 h (lower is better)"
     assert labels["frequency_bias"].endswith("(ideal 1)")
 
 

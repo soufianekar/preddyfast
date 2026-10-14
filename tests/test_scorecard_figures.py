@@ -115,9 +115,20 @@ def test_subtitle_states_the_fixed_caveats():
                    "common inits"):
         assert phrase in text, phrase
     precip = figures.figure_text(
-        figures.make_scorecard_fig(_table("precipitation_6h", "mae"), "precipitation_6h", "mae", False, CTX)
+        figures.make_scorecard_fig(_table("precipitation_24h", "mae"), "precipitation_24h", "mae", False, CTX)
     )
-    assert "6 h totals ending 00/06/12/18 UTC" in precip
+    assert "24 h totals ending 06 UTC — never hourly sums" in precip
+
+
+def test_precipitation_without_a_day_1_column_still_draws():
+    # 24 h windows end at T+30 at the earliest: lead day 1 has no pairs.
+    table = _table("precipitation_24h", "mae", days=range(2, 16))
+    fig = figures.make_scorecard_fig(table, "precipitation_24h", "mae", False, CTX)
+    h = _heat(fig)
+    assert 1 in list(h.x) and 15 in list(h.x)
+    assert np.isnan(np.asarray(h.z, dtype=float)[:, 0]).all()
+    relative = figures.make_scorecard_fig(table, "precipitation_24h", "mae", True, _ctx(baseline="ifs_ens"))
+    assert _heat(relative) is not None
 
 
 def test_crps_note_only_with_a_deterministic_model_in_a_crps_figure():
@@ -146,7 +157,7 @@ def test_bias_and_frequency_bias_reference_lines():
     bias = figures.make_score_lead_fig(_table(score="bias"), "temperature_2m", "bias", CTX)
     assert any(s.y0 == 0 for s in bias.layout.shapes)
     fb = figures.make_score_lead_fig(
-        _table("precipitation_6h", "frequency_bias"), "precipitation_6h", "frequency_bias", CTX)
+        _table("precipitation_24h", "frequency_bias"), "precipitation_24h", "frequency_bias", CTX)
     assert any(s.y0 == 1 for s in fb.layout.shapes)
     assert not figures.make_score_lead_fig(
         _table(), "temperature_2m", "rmse", CTX).layout.shapes

@@ -45,7 +45,7 @@ _SELECT_COLUMNS = [
 # scorecard variable key -> ok_* column in the selected network
 _OK_COLUMN = {
     "temperature_2m": "ok_temperature",
-    "precipitation_6h": "ok_precip",
+    "precipitation_24h": "ok_precip",
     "wind_speed_10m": "ok_wind",
 }
 
@@ -172,16 +172,23 @@ def completeness(
 ) -> float:
     """Share of 00/06/12/18 UTC synoptic hours (or windows) with a QC'd value.
 
+    A window variable with `window_end_hour` counts only windows ending then
+    (24 h precipitation: the 06 UTC reports, one per day).
+
     `variable` is a `SCORECARD_VARIABLES` key. Instants count a value within
     +-15 min of the hour (after QC and per-hour dedupe). A precipitation window
-    ending at the hour counts when a station-reported total exists there or
-    every hour of the window has a reported hourly value.
+    ending at the hour counts when a station-reported total exists there or,
+    unless the variable sets `hourly_fallback` False, every hour of the window
+    has a reported hourly value.
     """
     spec = SCORECARD_VARIABLES[variable]
     if spec["obs"] is None:
         raise ValueError(f"{variable} has no station observations")
     start, end = _utc(start), _utc(end)
     hours = _synoptic_ends(start, end)
+    end_hour = spec.get("window_end_hour")
+    if end_hour is not None:
+        hours = hours[hours.hour == end_hour]
     if len(hours) == 0:
         return 0.0
     hourly = dedupe_hourly(obs)
@@ -203,6 +210,8 @@ def completeness(
         else pd.DatetimeIndex([], tz="UTC")
     )
     ok = hours.isin(reported)
+    if not spec.get("hourly_fallback", True):
+        return float(ok.sum() / len(hours))
     complete = np.ones(len(hours), dtype=bool)
     for k in range(w):
         complete &= (hours - pd.Timedelta(hours=k)).isin(hourly_idx)
@@ -310,7 +319,7 @@ def select_network(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
         row = {c: getattr(rec, c) for c in ("id", "name", "lat", "lon", "elev_m")}
         for key, col in _OK_COLUMN.items():
             need = SCORECARD_VARIABLES[key]["completeness"]
-            if fixed and key == "precipitation_6h":
+            if fixed and key == "precipitation_24h":
                 need = SCORECARD_FIXED_PRECIP_COMPLETENESS
             row[col] = bool(completeness(frame, key, start, end) >= need)
         rows.append(row)

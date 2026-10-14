@@ -2043,6 +2043,8 @@ _SCORECARD_SCORES: dict[str, tuple[str, bool]] = {
     "ets": ("ETS", False),
     "hss": ("HSS", False),
     "frequency_bias": ("Frequency bias (1 = unbiased)", False),
+    "pod": ("POD (hit rate)", False),
+    "far": ("FAR (false alarm ratio)", False),
 }
 # Cells with too few pairs: a cross, neutral enough to read on any cell colour.
 _NEUTRAL_MARK = "rgba(128, 128, 128, 0.95)"
@@ -2103,7 +2105,12 @@ def _scorecard_frame_text(
         )
         sampling = _FEW_RUNS_NOTE[0].upper() + _FEW_RUNS_NOTE[1:]
     else:
-        if spec["window_hours"]:
+        if spec["window_hours"] and not spec.get("hourly_fallback", True):
+            match = context.get("tolerance") or (
+                f"Observations: GHCNh station-reported {spec['window_hours']} h "
+                f"totals ending {spec['window_end_hour']:02d} UTC — never hourly sums"
+            )
+        elif spec["window_hours"]:
             match = context.get("tolerance") or (
                 f"Observations: GHCNh {spec['window_hours']} h totals ending "
                 "00/06/12/18 UTC — reported where available, else complete "

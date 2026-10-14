@@ -21,7 +21,7 @@ def general_mode(monkeypatch):
 def _frame(times, **cols):
     n = len(times)
     out = pd.DataFrame({"valid_time": pd.DatetimeIndex(times, tz="UTC")})
-    for name in ("temperature_2m", "wind_speed_10m", "precipitation_1h", "precip_total_6h"):
+    for name in ("temperature_2m", "wind_speed_10m", "precipitation_1h", "precip_total_24h"):
         out[name] = cols.get(name, [np.nan] * n)
         out[f"{name}_report_type"] = cols.get(f"{name}_report_type", ["FM-15"] * n)
     return out
@@ -99,20 +99,47 @@ def test_utc_report_not_shifted_by_dst():
     assert c == 1.0
 
 
-def test_precip_window_from_reported_total_or_six_hourly_values():
+def test_precip_counts_reported_06_utc_24h_totals_only():
     start = pd.Timestamp("2026-01-01 00:00", tz="UTC")
-    end = pd.Timestamp("2026-01-02 18:00", tz="UTC")  # 8 windows ending 00..18
-    ends = list(_synoptic(start, end))
-    # windows 1-2 from reported totals
-    rep = _frame(ends[:2], precip_total_6h=[0.5, 0.0])
-    # window 3 (ending ends[2]): six complete hourly values
-    h3 = pd.date_range(ends[2] - pd.Timedelta("5h"), ends[2], freq="h")
-    hourly = _frame(h3, precipitation_1h=[0.1] * 6)
-    # window 4: only five hourly values -> incomplete
-    h4 = pd.date_range(ends[3] - pd.Timedelta("4h"), ends[3], freq="h")
-    part = _frame(h4, precipitation_1h=[0.1] * 5)
-    f = pd.concat([rep, hourly, part], ignore_index=True)
-    assert sn.completeness(f, "precipitation_6h", start, end) == pytest.approx(3 / 8)
+    end = pd.Timestamp("2026-01-10 18:00", tz="UTC")  # ten 06 UTC window ends
+    days = pd.date_range("2026-01-01 06:00", periods=10, freq="D", tz="UTC")
+    # three reported totals at 06 UTC; one at 12 UTC (not a 06-06 window)
+    rep = _frame(
+        list(days[:3]) + [pd.Timestamp("2026-01-04 12:00", tz="UTC")],
+        precip_total_24h=[0.5, 0.0, 1.0, 2.0],
+    )
+    # a complete day of hourly reports is never counted
+    h = pd.date_range(days[4] - pd.Timedelta("23h"), days[4], freq="h")
+    hourly = _frame(h, precipitation_1h=[0.1] * 24)
+    f = pd.concat([rep, hourly], ignore_index=True)
+    assert sn.completeness(f, "precipitation_24h", start, end) == pytest.approx(3 / 10)
+
+
+def test_real_fixed_counts_qualify_exactly_egll_eddb_spmu(monkeypatch):
+    start = pd.Timestamp("2026-09-01", tz="UTC")
+    end = pd.Timestamp("2026-09-14 18:00", tz="UTC")  # 14 06 UTC window ends
+    days = pd.date_range("2026-09-01 06:00", periods=14, freq="D", tz="UTC")
+    t = pd.date_range(start, end, freq="6h")
+    ids = ("EGLL", "LFPG", "EDDB", "EHAM", "LSZH", "SPMU0098221", "KJFK", "OMDB")
+    reporting = {"EGLL", "EDDB", "SPMU0098221"}
+    st = pd.DataFrame({
+        "id": list(ids), "name": list(ids), "lat": 50.0, "lon": 5.0,
+        "elev_m": 10.0, "country": "XX",
+    })
+
+    def frame(sid):
+        f = _frame(t, temperature_2m=[5.0] * len(t), wind_speed_10m=[3.0] * len(t))
+        if sid in reporting:
+            r = _frame(days, precip_total_24h=[0.0] * 14)
+            f = pd.concat([f, r], ignore_index=True)
+        return f
+
+    monkeypatch.setattr(sn, "SCORECARD_STATIONS", ids)
+    monkeypatch.setattr(obs, "station_list", lambda: st)
+    monkeypatch.setattr(obs, "fetch_station_year", lambda sid, y: frame(sid))
+    net = sn.select_network(start, end).set_index("id")
+    assert set(net.index[net["ok_precip"]]) == reporting
+    assert net["ok_temperature"].all()
 
 
 def test_thin_by_distance_exact_n_keeps_farthest_pair_and_spreads():
@@ -157,7 +184,7 @@ def _full(start, end):
         t,
         temperature_2m=[5.0] * len(t),
         wind_speed_10m=[3.0] * len(t),
-        precip_total_6h=[0.0] * len(t),
+        precip_total_24h=[0.0 if h == 6 else np.nan for h in t.hour],
     )
 
 
@@ -178,7 +205,7 @@ def test_year_boundary_window_reads_both_years(monkeypatch):
     years = set(out["valid_time"].dt.year)
     assert years == {2025, 2026}
     assert {"valid_time", "temperature_2m", "wind_speed_10m", "precipitation_1h",
-            "precip_total_6h"} <= set(out.columns)
+            "precip_total_24h"} <= set(out.columns)
 
 
 def test_select_network_caps_downloads_and_thins(monkeypatch):
@@ -216,7 +243,7 @@ def test_select_network_marks_per_variable_ok(monkeypatch):
         if sid == "G001":
             f["wind_speed_10m"] = np.nan
         if sid == "G002":
-            f["precip_total_6h"] = np.nan
+            f["precip_total_24h"] = np.nan
         return f
 
     monkeypatch.setattr(obs, "fetch_station_year", fake)
@@ -248,25 +275,12 @@ def test_empty_network_keeps_its_window(monkeypatch, tmp_path):
     assert got.empty and s == START and e == END
 
 
-def _precip_hourly(report_times):
-    return _frame(report_times, precipitation_1h=[0.2] * len(report_times))
-
-
-def test_hourly_precip_report_within_15_min_closes_the_nearest_hour():
+def test_hourly_precip_reports_never_qualify_a_station():
     start = pd.Timestamp("2026-01-01 06:00", tz="UTC")
-    end = pd.Timestamp("2026-01-01 06:00", tz="UTC")
-    # hours 01..06 reported at :50 (->next hour), :00, :10 - all within 15 min
-    off = ["00:50", "02:00", "02:50", "04:10", "05:00", "05:50"]
-    t = [pd.Timestamp(f"2026-01-01 {x}", tz="UTC") for x in off]
-    assert sn.completeness(_precip_hourly(t), "precipitation_6h", start, end) == 1.0
-
-
-def test_hourly_precip_report_30_min_off_does_not_count():
-    start = pd.Timestamp("2026-01-01 06:00", tz="UTC")
-    end = pd.Timestamp("2026-01-01 06:00", tz="UTC")
-    off = ["00:50", "02:00", "02:50", "03:30", "05:00", "05:50"]
-    t = [pd.Timestamp(f"2026-01-01 {x}", tz="UTC") for x in off]
-    assert sn.completeness(_precip_hourly(t), "precipitation_6h", start, end) == 0.0
+    end = pd.Timestamp("2026-01-02 06:00", tz="UTC")
+    t = pd.date_range("2025-12-31 07:00", "2026-01-02 06:00", freq="h")
+    f = _frame(t, precipitation_1h=[0.2] * len(t))
+    assert sn.completeness(f, "precipitation_24h", start, end) == 0.0
 
 
 def test_missing_station_year_skipped_but_unreachable_source_raises(monkeypatch):
@@ -353,13 +367,12 @@ def test_fixed_station_failing_temperature_is_logged_and_excluded(monkeypatch, c
     assert any("LFPG" in r.message and "temperature" in r.message for r in caplog.records)
 
 
-def test_precip_threshold_is_looser_for_the_fixed_list_only(monkeypatch):
-    hrs = _synoptic()
-    keep = 22  # 22 of 40 windows = 0.55
+def test_precip_needs_half_the_06_utc_reports_in_both_modes(monkeypatch):
     f = _full(START, END)
-    f["precip_total_6h"] = [0.0] * keep + [np.nan] * (len(f) - keep)
-    assert sn.completeness(f, "precipitation_6h", START, END) == pytest.approx(0.55)
-    assert len(hrs) == 40
+    f["precip_total_24h"] = [
+        0.0 if (h == 6 and i < 5 * 4) else np.nan for i, h in enumerate(f["valid_time"].dt.hour)
+    ]
+    assert sn.completeness(f, "precipitation_24h", START, END) == pytest.approx(0.5)
     _fixed_world(monkeypatch, {s: f for s in FIXED})
     assert sn.select_network(START, END)["ok_precip"].all()
 
@@ -367,7 +380,10 @@ def test_precip_threshold_is_looser_for_the_fixed_list_only(monkeypatch):
     monkeypatch.setattr(sn, "thin_by_distance", lambda df, n: df.reset_index(drop=True))
     monkeypatch.setattr(obs, "station_list", lambda: _stations(2))
     monkeypatch.setattr(obs, "_year_exists", lambda sid, y: True)
-    monkeypatch.setattr(obs, "fetch_station_year", lambda sid, y: f)
+    g = f.copy()
+    g["precip_total_24h"] = np.nan
+    g.loc[g["valid_time"].dt.hour == 6, "precip_total_24h"] = [0.0] * 4 + [np.nan] * 6
+    monkeypatch.setattr(obs, "fetch_station_year", lambda sid, y: g)
     net = sn.select_network(START, END)
     assert len(net) == 2 and not net["ok_precip"].any()
 
