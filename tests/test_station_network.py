@@ -23,7 +23,12 @@ def general_mode(monkeypatch):
 def _frame(times, **cols):
     n = len(times)
     out = pd.DataFrame({"valid_time": pd.DatetimeIndex(times, tz="UTC")})
-    for name in ("temperature_2m", "wind_speed_10m", "precipitation_1h", "precip_total_24h"):
+    for name in (
+        "temperature_2m",
+        "wind_speed_10m",
+        "precipitation_1h",
+        "precip_total_24h",
+    ):
         out[name] = cols.get(name, [np.nan] * n)
         out[f"{name}_report_type"] = cols.get(f"{name}_report_type", ["FM-15"] * n)
     return out
@@ -37,8 +42,10 @@ def _synoptic(start=START, end=END):
 def test_completeness_counts_only_hours_within_15_min():
     hrs = _synoptic()
     # first 20 exactly on the hour, next 10 at +10 min, last 10 at +20 min (outside)
-    times = list(hrs[:20]) + list(hrs[20:30] + pd.Timedelta("10min")) + list(
-        hrs[30:] + pd.Timedelta("20min")
+    times = (
+        list(hrs[:20])
+        + list(hrs[20:30] + pd.Timedelta("10min"))
+        + list(hrs[30:] + pd.Timedelta("20min"))
     )
     f = _frame(times, temperature_2m=[10.0] * 40)
     assert sn.completeness(f, "temperature_2m", START, END) == pytest.approx(30 / 40)
@@ -124,10 +131,16 @@ def test_real_fixed_counts_qualify_exactly_egll_eddb_spmu(monkeypatch):
     t = pd.date_range(start, end, freq="6h")
     ids = ("EGLL", "LFPG", "EDDB", "EHAM", "LSZH", "SPMU0098221", "KJFK", "OMDB")
     reporting = {"EGLL", "EDDB", "SPMU0098221"}
-    st = pd.DataFrame({
-        "id": list(ids), "name": list(ids), "lat": 50.0, "lon": 5.0,
-        "elev_m": 10.0, "country": "XX",
-    })
+    st = pd.DataFrame(
+        {
+            "id": list(ids),
+            "name": list(ids),
+            "lat": 50.0,
+            "lon": 5.0,
+            "elev_m": 10.0,
+            "country": "XX",
+        }
+    )
 
     def frame(sid):
         f = _frame(t, temperature_2m=[5.0] * len(t), wind_speed_10m=[3.0] * len(t))
@@ -206,13 +219,20 @@ def test_year_boundary_window_reads_both_years(monkeypatch):
     assert out["valid_time"].min() >= s and out["valid_time"].max() <= e
     years = set(out["valid_time"].dt.year)
     assert years == {2025, 2026}
-    assert {"valid_time", "temperature_2m", "wind_speed_10m", "precipitation_1h",
-            "precip_total_24h"} <= set(out.columns)
+    assert {
+        "valid_time",
+        "temperature_2m",
+        "wind_speed_10m",
+        "precipitation_1h",
+        "precip_total_24h",
+    } <= set(out.columns)
 
 
 def test_select_network_caps_downloads_and_thins(monkeypatch):
     monkeypatch.setattr(sn, "SCORECARD_MAX_STATIONS", 5)
-    st = pd.concat([_stations(40), _stations(5, "FR").assign(id=lambda d: "F" + d["id"])])
+    st = pd.concat(
+        [_stations(40), _stations(5, "FR").assign(id=lambda d: "F" + d["id"])]
+    )
     monkeypatch.setattr(obs, "station_list", lambda: st)
     monkeypatch.setattr(obs, "_year_exists", lambda sid, y: sid != "G001")
     fetched = []
@@ -230,9 +250,18 @@ def test_select_network_caps_downloads_and_thins(monkeypatch):
     assert fetched[0] not in set(net["id"])
     assert len(net) == 5
     assert list(net.columns) == [
-        "id", "name", "lat", "lon", "elev_m", "ok_temperature", "ok_precip", "ok_wind",
+        "id",
+        "name",
+        "lat",
+        "lon",
+        "elev_m",
+        "ok_temperature",
+        "ok_precip",
+        "ok_wind",
     ]
-    assert net["ok_temperature"].all() and net["ok_wind"].all() and net["ok_precip"].all()
+    assert (
+        net["ok_temperature"].all() and net["ok_wind"].all() and net["ok_precip"].all()
+    )
 
 
 def test_select_network_marks_per_variable_ok(monkeypatch):
@@ -258,20 +287,27 @@ def test_select_network_marks_per_variable_ok(monkeypatch):
 def test_save_and_load_network_round_trip(monkeypatch, tmp_path):
     monkeypatch.setattr(sn, "SCORECARD_DIR", str(tmp_path))
     assert sn.load_network() is None
-    net = _stations(2).drop(columns="country").assign(
-        ok_temperature=True, ok_precip=False, ok_wind=True
+    net = (
+        _stations(2)
+        .drop(columns="country")
+        .assign(ok_temperature=True, ok_precip=False, ok_wind=True)
     )
     sn.save_network(net, START, END)
     got, s, e = sn.load_network()
     assert s == START and e == END
-    pd.testing.assert_frame_equal(got.reset_index(drop=True), net.reset_index(drop=True))
+    pd.testing.assert_frame_equal(
+        got.reset_index(drop=True), net.reset_index(drop=True)
+    )
 
 
 def test_empty_network_keeps_its_window(monkeypatch, tmp_path):
     monkeypatch.setattr(sn, "SCORECARD_DIR", str(tmp_path))
-    empty = _stations(2).drop(columns="country").assign(
-        ok_temperature=True, ok_precip=False, ok_wind=True
-    ).iloc[0:0]
+    empty = (
+        _stations(2)
+        .drop(columns="country")
+        .assign(ok_temperature=True, ok_precip=False, ok_wind=True)
+        .iloc[0:0]
+    )
     sn.save_network(empty, START, END)
     got, s, e = sn.load_network()
     assert got.empty and s == START and e == END
@@ -323,17 +359,26 @@ FIXED = ("EGLL", "LFPG", "EDDB")
 
 def _fixed_world(monkeypatch, frames):
     """station_list holds the fixed ids plus a German decoy; `frames[sid]` is the file."""
-    st = pd.concat([
-        pd.DataFrame({
-            "id": list(FIXED), "name": ["London", "Paris", "Berlin"],
-            "lat": [51.5, 49.0, 52.4], "lon": [-0.5, 2.5, 13.5], "elev_m": 25.0,
-            "country": ["GB", "FR", "DE"],
-        }),
-        _stations(3),
-    ])
+    st = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "id": list(FIXED),
+                    "name": ["London", "Paris", "Berlin"],
+                    "lat": [51.5, 49.0, 52.4],
+                    "lon": [-0.5, 2.5, 13.5],
+                    "elev_m": 25.0,
+                    "country": ["GB", "FR", "DE"],
+                }
+            ),
+            _stations(3),
+        ]
+    )
     monkeypatch.setattr(sn, "SCORECARD_STATIONS", FIXED)
     monkeypatch.setattr(obs, "station_list", lambda: st)
-    monkeypatch.setattr(obs, "_year_exists", lambda sid, y: pytest.fail("no year probe"))
+    monkeypatch.setattr(
+        obs, "_year_exists", lambda sid, y: pytest.fail("no year probe")
+    )
     fetched = []
 
     def fake(sid, year):
@@ -366,13 +411,16 @@ def test_fixed_station_failing_temperature_is_logged_and_excluded(monkeypatch, c
     with caplog.at_level("WARNING", logger="utils.station_network"):
         net = sn.select_network(START, END)
     assert list(net["id"]) == ["EGLL", "EDDB"]
-    assert any("LFPG" in r.message and "temperature" in r.message for r in caplog.records)
+    assert any(
+        "LFPG" in r.message and "temperature" in r.message for r in caplog.records
+    )
 
 
 def test_precip_needs_half_the_06_utc_reports_in_both_modes(monkeypatch):
     f = _full(START, END)
     f["precip_total_24h"] = [
-        0.0 if (h == 6 and i < 5 * 4) else np.nan for i, h in enumerate(f["valid_time"].dt.hour)
+        0.0 if (h == 6 and i < 5 * 4) else np.nan
+        for i, h in enumerate(f["valid_time"].dt.hour)
     ]
     assert sn.completeness(f, "precipitation_24h", START, END) == pytest.approx(0.5)
     _fixed_world(monkeypatch, {s: f for s in FIXED})
@@ -393,8 +441,10 @@ def test_precip_needs_half_the_06_utc_reports_in_both_modes(monkeypatch):
 def test_save_network_records_the_configured_list(monkeypatch, tmp_path):
     monkeypatch.setattr(sn, "SCORECARD_DIR", str(tmp_path))
     assert sn.load_configured() is None
-    net = _stations(1).drop(columns="country").assign(
-        ok_temperature=True, ok_precip=True, ok_wind=True
+    net = (
+        _stations(1)
+        .drop(columns="country")
+        .assign(ok_temperature=True, ok_precip=True, ok_wind=True)
     )
     sn.save_network(net, START, END, ("B", "A"))
     assert sn.load_configured() == ("A", "B")
@@ -408,7 +458,9 @@ def test_rule_fingerprint_is_stable_across_dict_ordering(monkeypatch):
     reordered = {
         k: dict(reversed(list(v.items()))) for k, v in sn.SCORECARD_VARIABLES.items()
     }
-    monkeypatch.setattr(sn, "SCORECARD_VARIABLES", dict(reversed(list(reordered.items()))))
+    monkeypatch.setattr(
+        sn, "SCORECARD_VARIABLES", dict(reversed(list(reordered.items())))
+    )
     assert sn.rule_fingerprint() == base
 
 
@@ -429,8 +481,10 @@ def test_rule_fingerprint_follows_every_deciding_input(monkeypatch):
 def test_save_network_records_the_rule_hash(monkeypatch, tmp_path):
     monkeypatch.setattr(sn, "SCORES_DIR", str(tmp_path))
     assert sn.load_rule_hash() is None
-    net = _stations(1).drop(columns="country").assign(
-        ok_temperature=True, ok_precip=True, ok_wind=True
+    net = (
+        _stations(1)
+        .drop(columns="country")
+        .assign(ok_temperature=True, ok_precip=True, ok_wind=True)
     )
     sn.save_network(net, START, END)
     assert sn.load_rule_hash() == sn.rule_fingerprint()
@@ -440,3 +494,39 @@ def test_save_network_records_the_rule_hash(monkeypatch, tmp_path):
     old.pop("rule_hash")
     wpath.write_text(json.dumps(old))
     assert sn.load_rule_hash() is None
+
+
+def test_rule_fingerprint_follows_country_and_station_cap(monkeypatch):
+    base = sn.rule_fingerprint()
+    monkeypatch.setattr(sn, "SCORECARD_COUNTRY", "XX")
+    assert sn.rule_fingerprint() != base
+    monkeypatch.undo()
+    monkeypatch.setattr(sn, "SCORECARD_MAX_STATIONS", sn.SCORECARD_MAX_STATIONS + 1)
+    assert sn.rule_fingerprint() != base
+
+
+def test_rule_fingerprint_ignores_non_selector_keys(monkeypatch):
+    base = sn.rule_fingerprint()
+    changed = {k: dict(v) for k, v in sn.SCORECARD_VARIABLES.items()}
+    for spec in changed.values():
+        spec["label"] = "other"
+        spec["unit"] = "other"
+        spec["scores"] = ["other"]
+        spec["tolerance"] = 99
+        spec["reference"] = "other"
+    monkeypatch.setattr(sn, "SCORECARD_VARIABLES", changed)
+    assert sn.rule_fingerprint() == base
+
+
+def test_corrupt_sidecar_never_raises(monkeypatch, tmp_path):
+    monkeypatch.setattr(sn, "SCORES_DIR", str(tmp_path))
+    net = (
+        _stations(1)
+        .drop(columns="country")
+        .assign(ok_temperature=True, ok_precip=True, ok_wind=True)
+    )
+    sn.save_network(net, START, END)
+    sn._window_path().write_text("{not json")
+    assert sn.load_rule_hash() is None
+    assert sn.load_configured() is None
+    assert sn.load_network() is None

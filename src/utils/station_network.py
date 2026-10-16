@@ -62,8 +62,6 @@ _RULE_KEYS = (
     "window_end_hour",
     "hourly_fallback",
     "completeness",
-    "tolerance",
-    "reference",
 )
 
 
@@ -82,6 +80,8 @@ def rule_fingerprint() -> str:
         },
         "fixed_precip_completeness": SCORECARD_FIXED_PRECIP_COMPLETENESS,
         "stations": sorted(SCORECARD_STATIONS),
+        "country": SCORECARD_COUNTRY,
+        "max_stations": SCORECARD_MAX_STATIONS,
     }
     text = json.dumps(rule, sort_keys=True, default=str)
     return hashlib.sha256(text.encode()).hexdigest()
@@ -415,41 +415,56 @@ def save_network(
     return path
 
 
+def _read_sidecar() -> dict | None:
+    """The window sidecar as a dict; None if absent or unreadable (logged)."""
+    wpath = _window_path()
+    if not wpath.exists():
+        return None
+    try:
+        data = json.loads(wpath.read_text())
+    except (OSError, ValueError) as exc:
+        logger.warning("Station network sidecar %s unreadable: %s", wpath, exc)
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def load_network() -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp] | None:
     """The frozen network and its (start, end) window; None if never screened.
 
     An empty frame (with the window) means the window was screened and no
-    station passed.
+    station passed. An unreadable sidecar counts as never screened.
     """
-    path, wpath = _network_path(), _window_path()
-    if not path.exists() or not wpath.exists():
+    path = _network_path()
+    window = _read_sidecar()
+    if window is None or not path.exists():
         return None
-    window = json.loads(wpath.read_text())
-    return (
-        pd.read_parquet(path),
-        pd.Timestamp(window["start"]),
-        pd.Timestamp(window["end"]),
-    )
+    try:
+        return (
+            pd.read_parquet(path),
+            pd.Timestamp(window["start"]),
+            pd.Timestamp(window["end"]),
+        )
+    except (KeyError, ValueError, OSError) as exc:
+        logger.warning("Station network %s unreadable: %s", path, exc)
+        return None
 
 
 def load_configured() -> tuple[str, ...] | None:
     """The `SCORECARD_STATIONS` the saved network was selected for (sorted).
 
     Empty for the general mode or a sidecar written before the key existed;
-    None when nothing is saved.
+    None when nothing (readable) is saved.
     """
-    wpath = _window_path()
-    if not wpath.exists():
+    data = _read_sidecar()
+    if data is None:
         return None
-    return tuple(sorted(json.loads(wpath.read_text()).get("configured", [])))
+    return tuple(sorted(data.get("configured", [])))
 
 
 def load_rule_hash() -> str | None:
     """The `rule_fingerprint` the saved network was selected under.
 
-    None when nothing is saved or the sidecar predates the key.
+    None when nothing readable is saved or the sidecar predates the key.
     """
-    wpath = _window_path()
-    if not wpath.exists():
-        return None
-    return json.loads(wpath.read_text()).get("rule_hash")
+    data = _read_sidecar()
+    return None if data is None else data.get("rule_hash")
