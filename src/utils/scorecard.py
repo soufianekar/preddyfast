@@ -818,14 +818,14 @@ def mode_columns(variable: str, mode: str) -> dict[str, str | bool]:
 def obs_modes(variable: str) -> tuple[str, ...]:
     """Display modes the page offers for a variable.
 
-    Height correction only where it applies (`mode_columns`: 2 m temperature).
-    Representativeness is always offered; a variable without a TM865 model
-    (Z500) is then drawn raw and its footer says so.
+    Raw always; another mode only where `mode_columns` applies it to the
+    variable (height correction: 2 m temperature; representativeness: the
+    variables with a TM865 model, not Z500).
     """
     return tuple(
         mode
         for mode in SCORECARD_MODES
-        if mode != "height_corrected" or mode_columns(variable, mode)["applied"]
+        if mode == "raw" or mode_columns(variable, mode)["applied"]
     )
 
 

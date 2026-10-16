@@ -429,12 +429,19 @@ def _find(component, component_id):
     return None
 
 
-def test_obs_modes_offer_height_correction_for_temperature_only():
+def test_obs_modes_offer_only_modes_that_apply():
     from utils.settings import SCORECARD_MODES
 
     assert scorecard.obs_modes("temperature_2m") == SCORECARD_MODES
-    for variable in ("wind_speed_10m", "precipitation_24h", "z500"):
+    for variable in ("wind_speed_10m", "precipitation_24h"):
         assert scorecard.obs_modes(variable) == ("raw", "representativeness")
+    assert scorecard.obs_modes("z500") == ("raw",)  # no TM865 model for Z500
+
+
+def test_z500_disables_representativeness_and_falls_back(page):
+    data, value = page.options_for_obs_mode("z500", "representativeness")
+    assert value == "raw"
+    assert next(d for d in data if d["value"] == "representativeness")["disabled"]
 
 
 def test_layout_obs_mode_defaults_to_raw_and_reads_the_query(page):
@@ -504,6 +511,17 @@ def test_score_select_offers_new_scores_grouped_by_threshold(page):
     assert set(five) == {"ets_5", "fbi_5", "pod_5", "far_5", "brier_5", "roc_area_5"}
     assert five["brier_5"] == "Fair Brier score (≥ 5 mm) (lower is better)"
     assert "crpss_persist" in [o["value"] for o in groups[0]["items"]]
+    # The headline threshold's duplicates of the general scores are dropped;
+    # its ROC area (no general twin) stays.
+    from utils.settings import SCORECARD_VARIABLES
+
+    head = SCORECARD_VARIABLES["precipitation_24h"]["threshold"]
+    one = [o["value"] for o in groups[1]["items"]]
+    assert names[1] == f"≥ {head:g} mm" and one == [f"roc_area_{head:g}"]
+    flat = [o["value"] for o in page._flat_score_options("precipitation_24h")]
+    assert len(flat) == len(set(flat))
+    for dup in ("ets", "fbi", "pod", "far", "brier"):
+        assert f"{dup}_{head:g}" not in flat
     data, value = page.options_for_variable("temperature_2m", "ets_5")
     assert value == "rmse"
     assert page.options_for_variable("precipitation_24h", "roc_area_10")[1] == "roc_area_10"
@@ -603,6 +621,21 @@ def test_method_note_lists_every_method(page):
                   "24·⌈lead/24⌉", "50 pairs", "5 runs"):
         assert words in text, words
     assert _find(page.layout(), "sc-method").value is None  # collapsed
+    stations = next(line for line in page._method_lines() if "00/06/12/18" in line)
+    assert "station" in stations and "500 hPa" not in stations
+    z500 = next(line for line in page._method_lines() if "500 hPa" in line)
+    for words in ("00 UTC valid times only", "IFS control T+0", "favours IFS and AIFS"):
+        assert words in z500, words
+
+
+def test_event_control_takes_unit_and_label_from_the_variable(page):
+    from utils.settings import SCORECARD_VARIABLES
+
+    spec = SCORECARD_VARIABLES["precipitation_24h"]
+    layout = page.layout()
+    data = _find(layout, "sc-threshold").data
+    assert [d["label"] for d in data] == [f"≥ {t:g} {spec['unit']}" for t in spec["thresholds"]]
+    assert f"Event ({spec['label']})" in str(layout)
 
 
 def test_deterministic_note_stays_when_representativeness_falls_back_to_raw():

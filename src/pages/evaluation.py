@@ -35,6 +35,7 @@ from utils.figures import (
     score_label,
 )
 from utils.settings import (
+    EVAL_REFERENCES,
     GRID_STORES,
     SCORE_DIRECTION,
     SCORECARD_BOOTSTRAP,
@@ -71,14 +72,10 @@ _MODE_LABELS = {
     "representativeness": "Representativeness (TM865)",
 }
 _DIURNAL_SCORES = {"bias": "Bias", "error_sd": "Error SD"}
-# Event thresholds of the reliability / ROC panels (every variable's, as keys).
-_THRESHOLDS = tuple(
-    dict.fromkeys(
-        scorecard.threshold_key(t)
-        for spec in SCORECARD_VARIABLES.values()
-        for t in spec["thresholds"] or ()
-    )
-)
+# The variable whose events the reliability / ROC panels draw, and its
+# thresholds as keys.
+_EVENT_SPEC = next(s for s in SCORECARD_VARIABLES.values() if s["thresholds"])
+_THRESHOLDS = tuple(scorecard.threshold_key(t) for t in _EVENT_SPEC["thresholds"])
 _GROUPS = tuple(f"{a}-{b}" for a, b in SCORECARD_LEAD_GROUPS)
 # The pair count under which `aggregate` flags a cell low_n (its own default).
 _MIN_N = inspect.signature(scorecard.aggregate).parameters["min_n"].default
@@ -125,11 +122,27 @@ def _offered_scores(variable: str | None) -> tuple[str, ...]:
     return (*spec["scores"], *spec["extra_scores"])
 
 
+# Per-threshold bases that repeat a general score at the headline threshold.
+_HEADLINE_TWINS = ("ets", "fbi", "pod", "far", "brier")
+
+
 def _threshold_scores(variable: str, threshold: float) -> list[str]:
-    """The variable's per-threshold scores at one threshold (`{base}_{t}`)."""
-    offered = set(SCORECARD_VARIABLES[variable]["extra_scores"])
+    """The variable's per-threshold scores at one threshold (`{base}_{t}`).
+
+    At the headline threshold (`spec["threshold"]`) the bases the general
+    scores already cover (ets, frequency bias, pod, far, brier) are left out.
+    """
+    spec = SCORECARD_VARIABLES[variable]
+    offered = set(spec["extra_scores"])
     key = scorecard.threshold_key(threshold)
-    return [f"{s}_{key}" for s in SCORECARD_THRESHOLD_SCORES if f"{s}_{key}" in offered]
+    headline = spec["threshold"] is not None and float(threshold) == float(
+        spec["threshold"]
+    )
+    return [
+        f"{s}_{key}"
+        for s in SCORECARD_THRESHOLD_SCORES
+        if f"{s}_{key}" in offered and not (headline and s in _HEADLINE_TWINS)
+    ]
 
 
 def _score_options(variable: str | None) -> list[dict]:
@@ -148,7 +161,11 @@ def _score_options(variable: str | None) -> list[dict]:
     if not spec["thresholds"]:
         return [option(s) for s in _offered_scores(variable)]
     per_threshold = {t: _threshold_scores(variable, t) for t in spec["thresholds"]}
-    split = {s for scores in per_threshold.values() for s in scores}
+    split = {
+        f"{s}_{scorecard.threshold_key(t)}"
+        for t in spec["thresholds"]
+        for s in SCORECARD_THRESHOLD_SCORES
+    }
     general = [s for s in _offered_scores(variable) if s not in split]
     headline = f"{spec['threshold']:g} {spec['unit']}"
     return [
@@ -323,14 +340,28 @@ def _method_lines() -> list[str]:
         for s in SCORECARD_STORES
     )
     boot = SCORECARD_BOOTSTRAP
+    # Variables no station observes: verified at the reference's valid times
+    # only (`scorecard.reference_leads`: the archived inits' hour).
+    references = [
+        f"{spec['label']}: verified against "
+        f"{EVAL_REFERENCES[spec['reference']]['label']} "
+        f"({EVAL_REFERENCES[spec['reference']]['description']}) at "
+        f"{SCORECARD_INIT_HOUR:02d} UTC valid times only, at each station's grid "
+        "cell; the reference favours IFS and AIFS, which start from the same "
+        "ECMWF analysis."
+        for spec in SCORECARD_VARIABLES.values()
+        if spec["reference"] != "stations"
+    ]
     return [
         "Model values: the nearest grid cell in each store's own grid, never "
         "interpolated.",
-        f"Valid times: {hours} UTC for {SCORECARD_INIT_HOUR:02d} UTC runs, the "
+        f"Valid times against stations: {hours} UTC for "
+        f"{SCORECARD_INIT_HOUR:02d} UTC runs, the "
         "coarsest step every model shares, so each lead day holds the same hours "
         f"of the diurnal cycle. {precip['label']}: {precip['window_hours']} h "
         f"totals ending {precip['window_end_hour']:02d} UTC as reported by the "
         "station (GHCNh), never hourly sums; a day without a report gives no pair.",
+        *references,
         "Ensembles: fair CRPS and fair Brier score (Ferro 2014), so ensembles of "
         "different size compare; a deterministic model's CRPS is its absolute "
         "error.",
@@ -406,10 +437,13 @@ def _diagnostics_panel(
             dmc.SimpleGrid(
                 [
                     _labelled(
-                        "Event (24 h precipitation)",
+                        f"Event ({_EVENT_SPEC['label']})",
                         _segmented(
                             "sc-threshold",
-                            [{"value": t, "label": f"≥ {t} mm"} for t in _THRESHOLDS],
+                            [
+                                {"value": t, "label": f"≥ {t} {_EVENT_SPEC['unit']}"}
+                                for t in _THRESHOLDS
+                            ],
                             threshold,
                         ),
                     ),
