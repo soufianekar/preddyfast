@@ -2115,7 +2115,7 @@ _PERSISTENCE_SCORES = ("rmse_ss_persist", "crpss_persist")
 _RANK_CAPTION = "U-shape = under-dispersive, ∩ = over-dispersive, slope = bias"
 # Cells with too few pairs: a cross, neutral enough to read on any cell colour.
 _NEUTRAL_MARK = "rgba(128, 128, 128, 0.95)"
-_SCORECARD_DETERMINISTIC_SKIP = ("spread_skill", "brier")
+_SCORECARD_DETERMINISTIC_SKIP = ("spread_skill", "spread_error", "brier")
 _SCORECARD_HEIGHT = 420
 # R25: the relative colour range is fixed; the true percent stays in the hover.
 _RELATIVE_CAP_PCT = 50.0
