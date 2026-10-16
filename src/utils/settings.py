@@ -1919,8 +1919,9 @@ SCORECARD_RNG_SEED: int = 20201110
 # Perturbed draws a deterministic store is expanded to, to stay CRPS-comparable.
 SCORECARD_DETERMINISTIC_DRAWS: int = 50
 # Layout of the stored pair rows; a file written with another version is
-# rescored (from the cached station cubes) on the next refresh.
-SCORECARD_ROW_VERSION: int = 3
+# rescored (from the cached station cubes) on the next refresh. 4: instant
+# persistence matched to reports at or before the init only.
+SCORECARD_ROW_VERSION: int = 4
 SCORECARD_DAYS: int = 14
 SCORECARD_INIT_HOUR: int = 0
 SCORECARD_MAX_STATIONS: int = 200
@@ -1959,6 +1960,10 @@ SCORECARD_LEAD_STEP_HOURS: int = 6
 # A cell resting on fewer runs than this is flagged like one with too few
 # pairs (R24): long leads of a window ending at the last observation have few.
 SCORECARD_MIN_INITS: int = 5
+# Significance is assessed only on this many common runs (Ruling V9): with
+# 3-day blocks, 5-7 runs give 2-3 blocks and a percentile interval that
+# collapses (anti-conservative). Fewer: NaN, "not assessed".
+SCORECARD_SIG_MIN_INITS: int = 10
 # When observations count as "in" for marking an init complete: the median of
 # each station's last report, over stations that reported in the
 # SCORECARD_OBS_RECENT_DAYS before the newest report, minus a grace for

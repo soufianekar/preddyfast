@@ -346,14 +346,16 @@ def test_spread_error_is_one_when_spread_matches_the_error_variance():
 
 
 def test_spread_error_uses_the_perturbed_member_count_in_representativeness():
+    # An ensemble row whose perturbed column names another M: that M is read.
+    # (A deterministic store has no spread in any mode: Ruling V10.)
     rows = _err_rows([1.5, 1.5, -0.5, -0.5], stations=("A", "B", "C", "D"),
-                     store="gfs", n_members=1.0, n_members_pert=50.0,
-                     err_pert=[1.5, 1.5, -0.5, -0.5], crps_pert=0.3,
+                     store="gefs", n_members=2.0, n_members_pert=50.0,
+                     spread2=1.0, err_pert=[1.5, 1.5, -0.5, -0.5], crps_pert=0.3,
                      spread2_pert=50.0 / 51.0)
     raw = _one(scorecard.aggregate(rows, 7, min_n=1), lead_day=1)
     pert = _one(scorecard.aggregate(rows, 7, min_n=1, mode="representativeness"),
                 lead_day=1)
-    assert np.isnan(raw["spread_error"])
+    assert raw["spread_error"] == pytest.approx(np.sqrt(1.5))
     assert pert["spread_error"] == pytest.approx(1.0)
 
 
@@ -624,3 +626,34 @@ def test_contingency_scores_are_identical_across_raw_and_representativeness():
     for score in scorecard.MODE_RAW_SCORES["representativeness"]:
         assert raw[score] == pert[score] or (np.isnan(raw[score]) and np.isnan(pert[score])), score
     assert raw["mae"] != pert["mae"]  # the mode did apply elsewhere
+
+
+# --- Final review fixes (Rulings V9, V10) -------------------------------------------
+
+
+def test_significance_needs_sig_min_inits_common_runs():
+    from utils.settings import SCORECARD_SIG_MIN_INITS
+
+    assert SCORECARD_SIG_MIN_INITS == 10
+    few = _paired(1.0, 0.0, inits=INITS10[:7])
+    gfs = _one(scorecard.significance(few, score="mae", period_days=14),
+               store="gfs", lead_day=1)
+    assert gfs["n_inits"] == 7 and gfs["diff"] == pytest.approx(1.0)
+    assert np.isnan(gfs["sig"]) and np.isnan(gfs["lo"]) and np.isnan(gfs["hi"])
+    enough = _one(scorecard.significance(_paired(1.0, 0.0), score="mae",
+                                         period_days=14), store="gfs", lead_day=1)
+    assert enough["n_inits"] == 10 and bool(enough["sig"]) is True
+
+
+@pytest.mark.parametrize("mode", ["raw", "height_corrected", "representativeness"])
+@pytest.mark.parametrize("store", ["gfs", "aifs_single", "icon_eu", "ifs_control"])
+def test_deterministic_store_has_no_spread_in_any_mode(store, mode):
+    # 50 perturbed draws give a finite perturbed variance: still no spread (V10).
+    err = [1.5, 1.5, -0.5, -0.5]
+    rows = _err_rows(err, stations=("A", "B", "C", "D"), store=store,
+                     n_members=1.0, n_members_pert=50.0, err_pert=err,
+                     err_hc=err, crps_pert=0.3, crps_hc=0.2,
+                     spread2_pert=50.0 / 51.0)
+    row = _one(scorecard.aggregate(rows, 7, min_n=1, mode=mode), lead_day=1)
+    assert np.isnan(row["spread_skill"]) and np.isnan(row["spread_error"])
+    assert np.isfinite(row["error_sd"]) and np.isfinite(row["crps"])

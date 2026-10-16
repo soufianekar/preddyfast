@@ -60,6 +60,7 @@ from utils.settings import (
     SCORECARD_READ_BUDGET_MB,
     SCORECARD_RNG_SEED,
     SCORECARD_ROW_VERSION,
+    SCORECARD_SIG_MIN_INITS,
     SCORECARD_STATIONS,
     SCORECARD_STORES,
     SCORECARD_VARIABLES,
@@ -202,7 +203,8 @@ def match_station_obs(
         Dims `(station, lead_hours)` plus `member` for `fc`: `fc` (members),
         `fc_mean` (member mean), `obs` (NaN where none), `obs_persist` (the
         observation at `valid_time - persistence_offset(lead)`, matched by the
-        same rule, NaN where none) and `valid_time`.
+        same rule from reports at or before the init only, NaN where none) and
+        `valid_time`.
         Leads beyond `SCORECARD_MAX_LEAD_HOURS` are dropped, and for a window
         variable with `window_end_hour` those not ending then. Instants take the
         report nearest the valid time within the variable's `tolerance`;
@@ -230,16 +232,26 @@ def match_station_obs(
     times = pd.Series(pd.to_datetime(cube["valid_time"].values))
     persist_times = times - persistence_offset(cube["lead_hours"].values)
 
+    init = (times - pd.to_timedelta(cube["lead_hours"].values, unit="h")).min()
+
     def _match(frame: pd.DataFrame, when: pd.Series) -> np.ndarray:
         if spec["window_hours"]:
             return _window_obs(frame, spec, when)
         return _instant_obs(frame, spec["obs"], when, spec["tolerance"])
 
+    def _before_init(frame: pd.DataFrame) -> pd.DataFrame:
+        # At lead % 24 == 0 the persistence time is the init itself: a report
+        # up to `tolerance` after it would be the future (window totals end on
+        # the hour and never reach past it).
+        if spec["window_hours"] or frame.empty:
+            return frame
+        return frame[verification._naive_utc(frame["valid_time"]) <= init]
+
     rows, persist = [], []
     for sid in cube["station"].values:
         frame = obs_by_station.get(str(sid), pd.DataFrame())
         rows.append(_match(frame, times))
-        persist.append(_match(frame, persist_times))
+        persist.append(_match(_before_init(frame), persist_times))
     empty = np.empty((0, cube.sizes["lead_hours"]))
     obs = np.vstack(rows) if rows else empty
     obs_persist = np.vstack(persist) if persist else empty
@@ -477,7 +489,8 @@ def pair_scores(
         of a variable whose scores include it, NaN otherwise.
 
         Temperature only: `dz`, and `err_hc` / `crps_hc` / `rank_hc` of the
-        members plus `0.0065 * dz` (TM865 Eq. 2; `rank_hc` NaN for one member). Temperature, wind and 24 h precipitation:
+        members plus `0.0065 * dz` (TM865 Eq. 2; `rank_hc` NaN for one
+        member). Temperature, wind and 24 h precipitation:
         `crps_pert` (fair), `spread2_pert` (ddof=1) and `err_pert` (mean minus
         observation) of the TM865 perturbed ensemble at the store's
         `native_km` — temperature centred on the height-corrected value; a
@@ -1142,10 +1155,12 @@ def aggregate(
     `error_sd` = √max(mse − bias², 0). `spread_skill` = √(mean (M+1)/M ·
     spread2) / RMSE and `spread_error` the same over `error_sd` (TM865 slide
     19), with M per row `n_members` (or `n_members_pert` when perturbed),
-    ideal 1; NaN for one member. Persistence (`obs_persist`, never perturbed):
-    `rmse_ss_persist` = 1 − mse / mse_persist and `crpss_persist` = 1 − crps /
-    mae_persist (a deterministic forecast's CRPS is its MAE), both over the
-    pairs that have a persistence observation only.
+    ideal 1; NaN for one member and for a deterministic store
+    (`GRID_STORES` kind) in every mode (Ruling V10). Persistence
+    (`obs_persist`, never perturbed): `rmse_ss_persist` = 1 − mse /
+    mse_persist and `crpss_persist` = 1 − crps / mae_persist (a deterministic
+    forecast's CRPS is its MAE), both over the pairs that have a persistence
+    observation only.
 
     `mode_applied` refers to the error, CRPS, spread, Brier, rank and
     probability parts; the contingency scores are raw in every mode
@@ -1218,6 +1233,13 @@ def aggregate(
     bias2 = out["bias"].to_numpy(dtype=float) ** 2
     out["error_sd"] = np.sqrt(np.maximum(out["se"].to_numpy(dtype=float) - bias2, 0.0))
     spread = np.sqrt(out["fsp"].to_numpy(dtype=float))
+    # Ruling V10: a deterministic store has no spread in any mode, by kind: its
+    # perturbed draws' variance is observation noise, not forecast spread.
+    if "store" in out:
+        det = out["store"].map(
+            lambda st: GRID_STORES.get(st, {}).get("kind") == "deterministic"
+        )
+        spread = np.where(det.to_numpy(dtype=bool), np.nan, spread)
     out["spread_skill"] = _div(spread, out["rmse"])
     out["spread_error"] = _div(spread, out["error_sd"])
     out["rmse_ss_persist"] = 1.0 - _div(out["se_pp"], out["sep"])
@@ -1326,9 +1348,11 @@ def significance(
         `variable`, `store`, `lead_day`, `n_inits` (common runs), `diff`
         (store minus baseline, in the score's unit), `lo`, `hi` (percentile
         interval at `SCORECARD_BOOTSTRAP["level"]`) and `sig` (1.0 when
-        `lo > 0` or `hi < 0`, else 0.0). With fewer than `SCORECARD_MIN_INITS`
-        common runs `lo`, `hi` and `sig` are NaN ("not assessed", never "not
-        significant"); the baseline's own row has `diff` 0 and NaN `sig`.
+        `lo > 0` or `hi < 0`, else 0.0). With fewer than
+        `SCORECARD_SIG_MIN_INITS` common runs `lo`, `hi` and `sig` are NaN ("not
+        assessed", never "not significant"; Ruling V9: fewer runs give too few
+        blocks for the percentile interval); the baseline's own row has `diff`
+        0 and NaN `sig`.
 
     Notes
     -----
@@ -1370,7 +1394,7 @@ def significance(
         lo = hi = sig = np.nan
         if store == baseline:
             diff = 0.0
-        elif n_inits >= SCORECARD_MIN_INITS:
+        elif n_inits >= SCORECARD_SIG_MIN_INITS:
             idx = _block_indices(n_inits, boot["resamples"], boot["block_days"])
             nn = n[idx].sum(axis=1)
             d = stat(x[idx].sum(axis=1) / nn) - stat(b[idx].sum(axis=1) / nn)

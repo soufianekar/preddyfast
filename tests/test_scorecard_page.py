@@ -392,7 +392,12 @@ def test_relative_rows_carry_significance_columns(full_env):
     base = rel[rel["store"] == "ifs_ens"]
     assert (base["diff_rmse"] == 0).all() and base["sig_rmse"].isna().all()
     gefs = rel[rel["store"] == "gefs"]
-    assert gefs["sig_rmse"].notna().all()  # 10 runs >= SCORECARD_MIN_INITS
+    # Ruling V9: assessed on >= SCORECARD_SIG_MIN_INITS (10) common runs only,
+    # so the 14-day card (10 runs) is tested and the 7-day card is not.
+    assert gefs.loc[gefs["period_days"] == 14, "sig_rmse"].notna().all()
+    week = gefs[gefs["period_days"] == 7]
+    assert not week.empty and week["sig_rmse"].isna().all()
+    assert week[["lo_rmse", "hi_rmse"]].isna().all().all()
 
 
 def test_page_reads_raw_rows_only_and_old_files_default_to_raw(full_env, page):
@@ -643,3 +648,22 @@ def test_deterministic_note_stays_when_representativeness_falls_back_to_raw():
     """Z500 has no TM865 model: its deterministic stores still have no ranks."""
     notes = scorecard.diagnostic_notes("z500", ["ifs_ens", "gfs"], "representativeness")
     assert "NOAA GFS" in notes["deterministic"]
+
+
+# --- Final review fixes: Method note (V9, findings 3, 5, 6) ------------------------
+
+
+def test_method_note_states_final_review_rules(page):
+    text = " ".join(page._method_lines())
+    for words in (
+        "assessed only with ≥ 10 common runs",
+        "never marked on a cell with too few pairs or runs",
+        "Contingency scores (ETS, HSS, POD, FAR, frequency bias) use the ensemble "
+        "mean ≥ threshold",
+        "Brier score and ROC area",
+        "0.25°; DWD ICON-EU 0.0625°",
+        "nearest-cell displacement is not in the perturbation model",
+        "including ICON-EU's finer 0.0625° grid",
+        "no spread for a deterministic model",
+    ):
+        assert words in text, words

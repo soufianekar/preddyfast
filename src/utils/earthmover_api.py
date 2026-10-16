@@ -1456,7 +1456,11 @@ def _station_cache_path(
                 )
             ],
             "accum_hours": accum_hours,
-            **({"window_end_hour": window_end_hour} if window_end_hour is not None else {}),
+            **(
+                {"window_end_hour": window_end_hour}
+                if window_end_hour is not None
+                else {}
+            ),
             # Bump when windowing, scaling or the file layout changes, so an
             # older extract is never served for the new definition.
             "v": _STATION_CUBE_VERSION,

@@ -828,3 +828,84 @@ def test_reliability_axes_padded_and_sharpness_on_decades():
     assert fig.layout.yaxis.range[1] > 1.0
     assert fig.layout.yaxis2.type == "log" and fig.layout.yaxis2.dtick == 1
     assert "%" in fig.layout.yaxis2.tickformat
+
+
+# --- Final review fixes (Rulings V9, V10; findings 3–6) ----------------------------
+
+
+def test_low_n_cells_never_get_a_significance_dot():
+    table = _table(low=(("gefs", 2),))
+    rel = _sig_rows(table, sig_by_cell={("gefs", 2): 1.0, ("gefs", 5): 1.0})
+    fig = figures.make_scorecard_fig(
+        table, "temperature_2m", "rmse", True, _ctx(relative_rows=rel)
+    )
+    (dots,) = [t for t in fig.data if t.name == "significant at 95 %"]
+    assert list(dots.x) == [5]
+    h = _heat(fig)
+    row = list(h.y).index(GRID_STORES["gefs"]["label"])
+    assert "not assessed" in h.customdata[row][1][5]
+    text = figures.figure_text(fig)
+    assert "assessed only with ≥ 10 common runs" in text
+
+
+def test_spread_error_fig_omits_deterministic_spread_and_says_so():
+    table = _lead_diag(mode="representativeness")
+    table.loc[table["store"] == "gfs", "spread_error"] = 0.5  # an old file
+    fig = figures.make_spread_error_fig(table, "temperature_2m", "representativeness")
+    assert not [
+        t for t in fig.data if t.meta and t.meta[0] == "gfs" and t.meta[1] != "error_sd"
+    ]
+    text = figures.figure_text(fig)
+    assert "deterministic models: error SD only, no spread" in text
+
+
+@pytest.mark.parametrize("score", ["ets", "hss", "frequency_bias", "pod", "far", "ets_5"])
+def test_contingency_scores_say_they_use_the_ensemble_mean(score):
+    table = _table(variable="precipitation_24h", score=score, low=())
+    fig = figures.make_scorecard_fig(table, "precipitation_24h", score, False, CTX)
+    assert "from the ensemble mean ≥ threshold" in figures.figure_text(fig)
+    det = _table(variable="precipitation_24h", score=score, stores=("icon_eu",),
+                 low=())
+    fig = figures.make_scorecard_fig(det, "precipitation_24h", score, False, CTX)
+    assert "ensemble mean" not in figures.figure_text(fig)
+
+
+def test_precipitation_lead_axis_names_day_two_as_t30():
+    table = _table(variable="precipitation_24h", score="mae", low=())
+    fig = figures.make_scorecard_fig(table, "precipitation_24h", "mae", False, CTX)
+    assert fig.layout.xaxis.title.text == (
+        "Lead day (day 2 = T+30, 24 h ending 06 UTC)"
+    )
+    line = figures.make_score_lead_fig(table, "precipitation_24h", "mae", CTX)
+    assert "day 2 = T+30" in line.layout.xaxis.title.text
+    temp = figures.make_scorecard_fig(_table(), "temperature_2m", "rmse", False, CTX)
+    assert temp.layout.xaxis.title.text == "Lead day (day 1 = 0–24 h)"
+
+
+def test_footer_names_store_grids_and_orography_proxy():
+    fig = figures.make_scorecard_fig(_table(), "temperature_2m", "rmse", False, CTX)
+    text = figures.figure_text(fig)
+    assert "each store's own grid (0.25°; DWD ICON-EU 0.0625°)" in text
+    hc = figures.make_scorecard_fig(
+        _table(), "temperature_2m", "rmse", False, CTX, mode="height_corrected"
+    )
+    assert "including ICON-EU's finer 0.0625° grid" in figures.figure_text(hc)
+    rep = figures.make_scorecard_fig(
+        _table(), "temperature_2m", "rmse", False, CTX, mode="representativeness"
+    )
+    assert "nearest-cell displacement is not in the perturbation model" in (
+        figures.figure_text(rep)
+    )
+
+
+def test_cells_under_sig_min_inits_get_no_dot_even_from_an_old_file():
+    table = _table(low=()).assign(n_inits=7)
+    rel = _sig_rows(table, sig_by_cell={("gefs", 2): 1.0})
+    fig = figures.make_scorecard_fig(
+        table, "temperature_2m", "rmse", True, _ctx(relative_rows=rel)
+    )
+    (dots,) = [t for t in fig.data if t.name == "significant at 95 %"]
+    assert len(dots.x) == 0
+    h = _heat(fig)
+    row = list(h.y).index(GRID_STORES["gefs"]["label"])
+    assert "fewer than 10 common runs" in h.customdata[row][1][5]

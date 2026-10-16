@@ -532,3 +532,27 @@ def test_rank_hc_is_reproducible_and_finite_with_dz():
     b = scorecard.pair_scores(m, "temperature_2m", dz={"S1": 30.0, "S2": 0.0})
     pd.testing.assert_frame_equal(a, b)
     assert np.isfinite(a["rank_hc"]).all()
+
+
+# --- Final review fixes: persistence never after the init (T4) ---------------------
+
+
+def test_obs_persist_at_whole_day_leads_never_uses_a_report_after_init():
+    cube = _cube(np.zeros((1, 2, 1)), [24.0])
+    # Only a report 10 min after init: within tolerance, but in the future.
+    after = _obs([INIT + pd.Timedelta("10min")], temperature_2m=[3.0])
+    m = scorecard.match_station_obs(cube, {"S1": after}, "temperature_2m")
+    assert np.isnan(m["obs_persist"].item(0))
+    # A report 10 min before init wins over a nearer one 5 min after.
+    both = _obs([INIT - pd.Timedelta("10min"), INIT + pd.Timedelta("5min")],
+                temperature_2m=[1.0, 2.0])
+    m = scorecard.match_station_obs(cube, {"S1": both}, "temperature_2m")
+    assert m["obs_persist"].item(0) == 1.0
+    # The verifying observation itself is unaffected.
+    assert np.isnan(m["obs"].item(0))
+
+
+def test_row_version_bumped_for_persistence_rule():
+    from utils.settings import SCORECARD_ROW_VERSION
+
+    assert SCORECARD_ROW_VERSION == 4

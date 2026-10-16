@@ -47,6 +47,7 @@ from utils.settings import (
     SCORECARD_MIN_INITS,
     SCORECARD_MODES,
     SCORECARD_PERIODS,
+    SCORECARD_SIG_MIN_INITS,
     SCORECARD_STATIONS,
     SCORECARD_STORES,
     SCORECARD_THRESHOLD_SCORES,
@@ -339,6 +340,24 @@ def _method_lines() -> list[str]:
         f"{GRID_STORES[s]['label']} {GRID_STORES[s]['native_km']:g} km"
         for s in SCORECARD_STORES
     )
+    res = [GRID_STORES[s]["res_deg"] for s in SCORECARD_STORES]
+    common = max(set(res), key=res.count)
+    grids = "; ".join(
+        [
+            f"{common:g}°",
+            *(
+                f"{GRID_STORES[s]['label']} {GRID_STORES[s]['res_deg']:g}°"
+                for s in SCORECARD_STORES
+                if GRID_STORES[s]["res_deg"] != common
+            ),
+        ]
+    )
+    finer = " and ".join(
+        f"{GRID_STORES[s]['label'].split(' ', 1)[-1]}'s finer "
+        f"{GRID_STORES[s]['res_deg']:g}° grid"
+        for s in SCORECARD_STORES
+        if GRID_STORES[s]["res_deg"] < 0.25
+    )
     boot = SCORECARD_BOOTSTRAP
     # Variables no station observes: verified at the reference's valid times
     # only (`scorecard.reference_leads`: the archived inits' hour).
@@ -353,8 +372,8 @@ def _method_lines() -> list[str]:
         if spec["reference"] != "stations"
     ]
     return [
-        "Model values: the nearest grid cell in each store's own grid, never "
-        "interpolated.",
+        "Model values: the nearest grid cell in each store's own grid "
+        f"({grids}), never interpolated.",
         f"Valid times against stations: {hours} UTC for "
         f"{SCORECARD_INIT_HOUR:02d} UTC runs, the "
         "coarsest step every model shares, so each lead day holds the same hours "
@@ -370,19 +389,30 @@ def _method_lines() -> list[str]:
         "Observations · Height-corrected (2 m temperature only): t* = t + "
         "0.0065 K/m · (e_model − e_station) (ECMWF TM865 Eq. 2), with e_model from "
         "ERA5 orography as a proxy for each model's own; stations without an "
-        "elevation or an orography cell are excluded and counted in the footer.",
+        "elevation or an orography cell are excluded and counted in the footer. "
+        "ERA5 orography (0.25°) is used for every model"
+        + (f", including {finer}." if finer else "."),
         "Observations · Representativeness: the perturbed-ensemble method of ECMWF "
         "Technical Memorandum 865 (Ben Bouallègue 2020) — members perturbed by the "
         "observation uncertainty, with ΔA the model's native grid spacing "
         f"({spacing}); a deterministic model is expanded to "
-        f"{SCORECARD_DETERMINISTIC_DRAWS} perturbed draws. Contingency scores "
-        "(ETS, HSS, POD, FAR, frequency bias) stay raw in every mode.",
+        f"{SCORECARD_DETERMINISTIC_DRAWS} perturbed draws for its CRPS, Brier "
+        "score, rank histogram, reliability and ROC — but no spread for a "
+        "deterministic model in any mode: the draws' variance is observation "
+        "noise. ΔA is the native model spacing; nearest-cell displacement is not "
+        "in the perturbation model. Contingency scores stay raw in every mode.",
+        "Contingency scores (ETS, HSS, POD, FAR, frequency bias) use the ensemble "
+        "mean ≥ threshold (a deterministic model's own value). The mean is "
+        "smoothed, so they are biased high at low thresholds and low at high "
+        "ones; the fair Brier score and ROC area are their probabilistic "
+        "counterparts.",
         "Significance (relative view, dot = significant): paired circular "
         f"moving-block bootstrap over runs, blocks of {boot['block_days']} days, "
         f"{boot['resamples']} resamples, {boot['level'] * 100:g} % interval, "
         f"each pair weighted equally, against {GRID_STORES[_BASELINE]['label']} "
-        "on the pairs both models share; fewer than "
-        f"{SCORECARD_MIN_INITS} common runs: not assessed.",
+        "on the pairs both models share; assessed only with ≥ "
+        f"{SCORECARD_SIG_MIN_INITS} common runs (fewer give too few blocks for "
+        "the interval), and never marked on a cell with too few pairs or runs.",
         "Persistence: the observation 24·⌈lead/24⌉ h before the valid time; skill "
         "against it uses only pairs that have one.",
         f"Too few: a cell resting on fewer than {_MIN_N} pairs or "

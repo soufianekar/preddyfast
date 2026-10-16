@@ -29,6 +29,7 @@ from utils.settings import (
     SCORECARD_LEAD_GROUPS,
     SCORECARD_LEAD_STEP_HOURS,
     SCORECARD_MIN_INITS,
+    SCORECARD_SIG_MIN_INITS,
     SCORECARD_STORES,
     SCORECARD_VARIABLES,
     SYSTEM_STYLES,
@@ -2142,6 +2143,63 @@ _PERSISTENCE_NOTE = (
 _ROC_AREA_NOTE = (
     "ROC area from the members' event probabilities (trapezoid), 0.5 = no skill"
 )
+# Contingency scores (and their per-threshold `{base}_{t}`) are of the ensemble
+# mean >= t: a smoothed field, not an event probability.
+_CONTINGENCY_SCORES = ("ets", "hss", "frequency_bias", "pod", "far")
+_CONTINGENCY_BASES = ("ets", "fbi", "pod", "far")
+_CONTINGENCY_NOTES = (
+    "contingency scores from the ensemble mean ≥ threshold (deterministic: the "
+    "forecast)",
+    "the mean is smoothed: biased high at low thresholds, low at high ones",
+    "Brier score and ROC area are the probabilistic counterparts",
+)
+_DETERMINISTIC_SPREAD_NOTE = "deterministic models: error SD only, no spread"
+_PERTURBATION_LIMIT_NOTE = (
+    "ΔA is the native model spacing; nearest-cell displacement is not in the "
+    "perturbation model"
+)
+
+
+def _is_contingency(score: str) -> bool:
+    """Whether a score comes from the ensemble mean's yes/no contingency table."""
+    return score in _CONTINGENCY_SCORES or score.rpartition("_")[0] in (
+        _CONTINGENCY_BASES
+    )
+
+
+def _grid_spacings(stores: list[str]) -> str:
+    """Each store's own grid, e.g. "0.25°; DWD ICON-EU 0.0625°" (most common bare)."""
+    res = {s: GRID_STORES[s]["res_deg"] for s in stores or SCORECARD_STORES}
+    common = max(set(res.values()), key=list(res.values()).count)
+    others = [
+        f"{GRID_STORES[s]['label']} {r:g}°" for s, r in res.items() if r != common
+    ]
+    return "; ".join([f"{common:g}°", *others])
+
+
+def _orography_proxy_note() -> str:
+    """ERA5 orography stands in for every model's, finer grids named."""
+    finer = [
+        f"{GRID_STORES[s]['label'].split(' ', 1)[-1]}'s finer "
+        f"{GRID_STORES[s]['res_deg']:g}° grid"
+        for s in SCORECARD_STORES
+        if GRID_STORES[s]["res_deg"] < 0.25
+    ]
+    tail = f", including {' and '.join(finer)}" if finer else ""
+    return f"ERA5 orography (0.25°) is the proxy for every model{tail}"
+
+
+def _lead_axis_title(variable: str) -> str:
+    """Lead-day axis title; a window variable names its first verified day."""
+    spec = SCORECARD_VARIABLES[variable]
+    end, hours = spec.get("window_end_hour"), spec.get("window_hours")
+    if not hours or end is None:
+        return "Lead day (day 1 = 0–24 h)"
+    lead = (end - SCORECARD_INIT_HOUR) % 24
+    while lead < hours:
+        lead += 24
+    day = -(-lead // 24)
+    return f"Lead day (day {day} = T+{lead}, {hours} h ending {end:02d} UTC)"
 
 
 def _score_text(score: str, variable: str) -> tuple[str, str]:
@@ -2218,7 +2276,10 @@ def _mode_note(
     keys = {s for s, _ in scores}
     if mode == "representativeness" and keys & set(_PERSISTENCE_SCORES):
         parts.append("persistence is not perturbed")
+    if mode == "representativeness":
+        parts.append(_PERTURBATION_LIMIT_NOTE)
     if variable == "temperature_2m":
+        parts.append(_orography_proxy_note())
         if mode == "representativeness":
             parts.append("temperature centred on the height-corrected value")
         elif keys & {"spread_error", "spread"}:
@@ -2333,8 +2394,9 @@ def _scorecard_frame_text(
         (
             "Model values: nearest grid cell"
             + ("" if corrected else ", no height correction")
-            + "; coastal cells may be partly sea · common inits: every model "
-            "scored on the same runs"
+            + "; coastal cells may be partly sea · each store's own grid "
+            f"({_grid_spacings(stores)}) · common inits: every model scored on "
+            "the same runs"
         ),
         sampling,
     ]
@@ -2364,6 +2426,8 @@ def _scorecard_frame_text(
         )
     elif score.startswith("roc_area_"):
         notes.append(_ROC_AREA_NOTE)
+    if _is_contingency(score) and not all(_is_deterministic(s) for s in stores):
+        notes += _CONTINGENCY_NOTES
     if relative:
         base = GRID_STORES[context["baseline"]]["label"]
         notes.append(
@@ -2440,7 +2504,7 @@ def _significance_cells(
             if not np.isfinite(flag[r, c]):
                 text[r, c] = (
                     "significance not assessed (fewer than "
-                    f"{SCORECARD_MIN_INITS} common runs)"
+                    f"{SCORECARD_SIG_MIN_INITS} common runs)"
                     if np.isfinite(diff[r, c])
                     else "significance not assessed"
                 )
@@ -2550,6 +2614,23 @@ def make_scorecard_fig(
         if relative
         else (None, None)
     )
+    if sig_grid is not None:
+        # Ruling V9: a cell with too few pairs or runs is never marked, nor one
+        # under SCORECARD_SIG_MIN_INITS runs (an aggregates file written before).
+        not_base = np.array([s != context["baseline"] for s in stores])[:, None]
+        few_sig = np.isfinite(n_inits) & (n_inits < SCORECARD_SIG_MIN_INITS)
+        sig_text = np.where(
+            few_sig & not_base,
+            "significance not assessed (fewer than "
+            f"{SCORECARD_SIG_MIN_INITS} common runs)",
+            sig_text,
+        )
+        sig_text = np.where(
+            low & not_base,
+            "significance not assessed (too few pairs or runs)",
+            sig_text,
+        )
+        sig_grid = np.where((low | few_sig) & not_base, np.nan, sig_grid)
     custom = np.stack(
         [
             fmt(absolute, ".3g", f" {unit}" if unit else ""),
@@ -2642,7 +2723,8 @@ def make_scorecard_fig(
         level = f"{SCORECARD_BOOTSTRAP['level'] * 100:g} %"
         sig_line = (
             f"• significant at {level} (moving-block bootstrap over runs, paired "
-            f"against {base_label})",
+            f"against {base_label}) · assessed only with ≥ "
+            f"{SCORECARD_SIG_MIN_INITS} common runs, never on a cell marked ×",
         )
         rows, cols = np.nonzero((sig_grid == 1.0) & np.isfinite(z))
         fig.add_trace(
@@ -2678,7 +2760,7 @@ def make_scorecard_fig(
         },
         hovermode="closest",
         xaxis={
-            "title": "Lead day (day 1 = 0–24 h)",
+            "title": _lead_axis_title(variable),
             "tickvals": days,
             "ticktext": ticktext,
         },
@@ -2753,7 +2835,7 @@ def make_score_lead_fig(
             if k not in ("hovermode", "legend", "margin")
         },
         hovermode="closest",
-        xaxis={"title": "Lead day (day 1 = 0–24 h)", "dtick": 1},
+        xaxis={"title": _lead_axis_title(variable), "dtick": 1},
         yaxis_title=f"{label}{f' ({unit})' if unit else ''}",
     )
     head, foot = _scorecard_frame_text(
@@ -3050,7 +3132,8 @@ def make_spread_error_fig(
             col=1,
         )
         ratio = sub["spread_error"].to_numpy(dtype=float)
-        if not np.isfinite(ratio).any():
+        # Ruling V10: by kind, so an older file's perturbed "spread" never draws.
+        if _is_deterministic(store) or not np.isfinite(ratio).any():
             continue
         spread = ratio * err
         fig.add_trace(
@@ -3112,7 +3195,7 @@ def make_spread_error_fig(
     )
     _diag_layout(fig)
     fig.update_xaxes(dtick=1)
-    fig.update_xaxes(title_text="Lead day (day 1 = 0–24 h)", row=2, col=1)
+    fig.update_xaxes(title_text=_lead_axis_title(variable), row=2, col=1)
     fig.update_yaxes(title_text=f"Error SD, spread ({unit})", row=1, col=1)
     fig.update_yaxes(title_text="Spread / error SD", row=2, col=1)
     _diag_frame(
@@ -3125,7 +3208,15 @@ def make_spread_error_fig(
         mode,
         _rows_applied(rows),
         "Spread / error SD",
-        extra=(_ERROR_SD_NOTE[0].upper() + _ERROR_SD_NOTE[1:],),
+        extra=(
+            _ERROR_SD_NOTE[0].upper()
+            + _ERROR_SD_NOTE[1:]
+            + (
+                f" · {_DETERMINISTIC_SPREAD_NOTE}"
+                if any(_is_deterministic(s) for s in stores)
+                else ""
+            ),
+        ),
     )
     return fig
 
