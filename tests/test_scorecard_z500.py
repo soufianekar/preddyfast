@@ -226,7 +226,7 @@ def test_page_notes_gfs_absent_from_the_z500_card(env):
     page = importlib.import_module("pages.evaluation")
     heat, lines, _, alert, _ = page.update_scorecard(
         variable="z500", score="rmse", period=str(SCORECARD_DAYS), display="absolute",
-        models=["ifs_ens", "gfs"], lead="1", map_model="ifs_ens",
+        models=["ifs_ens", "gfs"], lead="1", map_model="ifs_ens", obs_mode="raw",
     )
     assert alert.color == "yellow" and "GFS" in str(alert.children)
     from utils.figures import figure_text

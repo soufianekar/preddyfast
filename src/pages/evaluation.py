@@ -9,6 +9,7 @@ request, so no visitor's choice reaches the archives.
 
 from __future__ import annotations
 
+import inspect
 import json
 
 import dash
@@ -22,19 +23,32 @@ from components.shared_state import url_sync
 from utils import scorecard
 from utils.figures import (
     CONFIG,
+    make_diurnal_fig,
     make_empty_fig,
+    make_rank_histogram_fig,
+    make_reliability_fig,
+    make_roc_fig,
     make_score_lead_fig,
     make_scorecard_fig,
+    make_spread_error_fig,
     make_station_score_map,
+    score_label,
 )
 from utils.settings import (
     GRID_STORES,
     SCORE_DIRECTION,
+    SCORECARD_BOOTSTRAP,
     SCORECARD_DAYS,
+    SCORECARD_DETERMINISTIC_DRAWS,
     SCORECARD_INIT_HOUR,
+    SCORECARD_LEAD_GROUPS,
+    SCORECARD_LEAD_STEP_HOURS,
+    SCORECARD_MIN_INITS,
+    SCORECARD_MODES,
     SCORECARD_PERIODS,
     SCORECARD_STATIONS,
     SCORECARD_STORES,
+    SCORECARD_THRESHOLD_SCORES,
     SCORECARD_VARIABLES,
 )
 from utils.url_state import query_choice, query_list
@@ -50,6 +64,24 @@ _PERIODS = {str(p) for p in SCORECARD_PERIODS}
 _DEFAULT_LEAD = "3"
 _LEADS = tuple(str(d) for d in scorecard.STATION_LEAD_DAYS)
 _MISSING = "No scorecard has been published yet."
+_DEFAULT_MODE = "raw"
+_MODE_LABELS = {
+    "raw": "Raw",
+    "height_corrected": "Height-corrected",
+    "representativeness": "Representativeness (TM865)",
+}
+_DIURNAL_SCORES = {"bias": "Bias", "error_sd": "Error SD"}
+# Event thresholds of the reliability / ROC panels (every variable's, as keys).
+_THRESHOLDS = tuple(
+    dict.fromkeys(
+        scorecard.threshold_key(t)
+        for spec in SCORECARD_VARIABLES.values()
+        for t in spec["thresholds"] or ()
+    )
+)
+_GROUPS = tuple(f"{a}-{b}" for a, b in SCORECARD_LEAD_GROUPS)
+# The pair count under which `aggregate` flags a cell low_n (its own default).
+_MIN_N = inspect.signature(scorecard.aggregate).parameters["min_n"].default
 _SCORE_NAMES = {
     "rmse": "RMSE",
     "mae": "MAE",
@@ -72,8 +104,10 @@ def _score_label(variable: str, score: str) -> str:
     if score == "brier":
         window = f"/{spec['window_hours']} h" if spec["window_hours"] else ""
         name = f"fair Brier ≥ {spec['threshold']:g} {spec['unit']}{window}"
-    else:
+    elif score in _SCORE_NAMES:
         name = _SCORE_NAMES[score]
+    else:
+        name = score_label(score, variable)
     ideal = SCORE_DIRECTION[score]
     hint = (
         "lower is better"
@@ -83,13 +117,75 @@ def _score_label(variable: str, score: str) -> str:
     return f"{name} ({hint})"
 
 
+def _offered_scores(variable: str | None) -> tuple[str, ...]:
+    """Every score the page offers for a variable: `scores` then `extra_scores`."""
+    if variable not in SCORECARD_VARIABLES:
+        return ()
+    spec = SCORECARD_VARIABLES[variable]
+    return (*spec["scores"], *spec["extra_scores"])
+
+
+def _threshold_scores(variable: str, threshold: float) -> list[str]:
+    """The variable's per-threshold scores at one threshold (`{base}_{t}`)."""
+    offered = set(SCORECARD_VARIABLES[variable]["extra_scores"])
+    key = scorecard.threshold_key(threshold)
+    return [f"{s}_{key}" for s in SCORECARD_THRESHOLD_SCORES if f"{s}_{key}" in offered]
+
+
 def _score_options(variable: str | None) -> list[dict]:
-    """The variable's scores, labelled with their direction."""
+    """The variable's scores, labelled with their direction.
+
+    A variable with event thresholds gets one group of its general scores and
+    one group per threshold; the others a flat list.
+    """
     if variable not in SCORECARD_VARIABLES:
         return []
+    spec = SCORECARD_VARIABLES[variable]
+
+    def option(s: str) -> dict:
+        return {"value": s, "label": _score_label(variable, s)}
+
+    if not spec["thresholds"]:
+        return [option(s) for s in _offered_scores(variable)]
+    per_threshold = {t: _threshold_scores(variable, t) for t in spec["thresholds"]}
+    split = {s for scores in per_threshold.values() for s in scores}
+    general = [s for s in _offered_scores(variable) if s not in split]
+    headline = f"{spec['threshold']:g} {spec['unit']}"
     return [
-        {"value": s, "label": _score_label(variable, s)}
-        for s in SCORECARD_VARIABLES[variable]["scores"]
+        {
+            "group": f"Amounts · headline events ≥ {headline}",
+            "items": [option(s) for s in general],
+        },
+        *(
+            {
+                "group": f"≥ {t:g} {spec['unit']}",
+                "items": [option(s) for s in scores],
+            }
+            for t, scores in per_threshold.items()
+            if scores
+        ),
+    ]
+
+
+def _flat_score_options(variable: str | None) -> list[dict]:
+    """`_score_options` without its groups."""
+    return [
+        item
+        for entry in _score_options(variable)
+        for item in (entry["items"] if "group" in entry else [entry])
+    ]
+
+
+def _obs_mode_data(variable: str | None) -> list[dict]:
+    """The Observations control: every mode, those the variable lacks disabled."""
+    offered = (
+        scorecard.obs_modes(variable)
+        if variable in SCORECARD_VARIABLES
+        else SCORECARD_MODES
+    )
+    return [
+        {"value": m, "label": _MODE_LABELS[m], "disabled": m not in offered}
+        for m in SCORECARD_MODES
     ]
 
 
@@ -127,17 +223,38 @@ def _absent_note(meta: dict, variable: str, stores: list[str]) -> str | None:
 
 
 def _select(
-    agg: pd.DataFrame, kind: str, variable: str, period: int, stores: list[str]
+    agg: pd.DataFrame,
+    kind: str,
+    variable: str,
+    period: int,
+    stores: list[str],
+    mode: str = _DEFAULT_MODE,
 ) -> pd.DataFrame:
-    """Rows of one kind, variable and period for the chosen models (raw mode)."""
+    """Rows of one kind, variable, period and display mode for the chosen models."""
     keep = (
         (agg["kind"] == kind)
         & (agg["variable"] == variable)
         & (agg["period_days"] == period)
         & agg["store"].isin(stores)
-        & (agg["mode"] == "raw")
+        & (agg["mode"] == mode)
     )
     return agg.loc[keep]
+
+
+def _context(
+    meta: dict, rows: pd.DataFrame, days: int, absent_note: str | None
+) -> dict:
+    """Figure context shared by every view: the window and the mode metadata."""
+    return {
+        "n_stations": int(rows["n_stations"].max()) if len(rows) else 0,
+        "period_days": days,
+        "init_hour": SCORECARD_INIT_HOUR,
+        "end": pd.Timestamp(meta["end"]),
+        "baseline": _BASELINE,
+        "absent_note": absent_note,
+        "mode_raw_scores": meta.get("mode_raw_scores"),
+        "height_corrected_excluded": meta.get("height_corrected_excluded"),
+    }
 
 
 def _lead_options(
@@ -166,17 +283,156 @@ def _load() -> tuple[tuple[pd.DataFrame, dict] | None, str | None]:
         return None, f"The published scorecard could not be read ({err})."
 
 
-def _graph(graph_id: str) -> dmc.Paper:
+def _graph(graph_id: str, height: int = 620) -> dmc.Paper:
     return dmc.Paper(
         dcc.Graph(
             id=graph_id,
             figure=make_empty_fig("Loading scorecard"),
             config=CONFIG,
-            style={"height": "620px"},
+            style={"height": f"{height}px"},
         ),
         withBorder=True,
         radius="md",
         p="xs",
+    )
+
+
+def _labelled(label: str, control) -> dmc.Stack:
+    return dmc.Stack([dmc.Text(label, size="sm", fw=500), control], gap=4)
+
+
+def _segmented(control_id: str, data: list[dict], value: str) -> dmc.SegmentedControl:
+    return dmc.SegmentedControl(
+        id=control_id, data=data, value=value, fullWidth=True, size="xs"
+    )
+
+
+def _method_lines() -> list[str]:
+    """The Method note, one item per method, worded from the settings in use."""
+    precip = SCORECARD_VARIABLES["precipitation_24h"]
+    hours = "/".join(
+        f"{h:02d}"
+        for h in range(
+            SCORECARD_INIT_HOUR % SCORECARD_LEAD_STEP_HOURS,
+            24,
+            SCORECARD_LEAD_STEP_HOURS,
+        )
+    )
+    spacing = ", ".join(
+        f"{GRID_STORES[s]['label']} {GRID_STORES[s]['native_km']:g} km"
+        for s in SCORECARD_STORES
+    )
+    boot = SCORECARD_BOOTSTRAP
+    return [
+        "Model values: the nearest grid cell in each store's own grid, never "
+        "interpolated.",
+        f"Valid times: {hours} UTC for {SCORECARD_INIT_HOUR:02d} UTC runs, the "
+        "coarsest step every model shares, so each lead day holds the same hours "
+        f"of the diurnal cycle. {precip['label']}: {precip['window_hours']} h "
+        f"totals ending {precip['window_end_hour']:02d} UTC as reported by the "
+        "station (GHCNh), never hourly sums; a day without a report gives no pair.",
+        "Ensembles: fair CRPS and fair Brier score (Ferro 2014), so ensembles of "
+        "different size compare; a deterministic model's CRPS is its absolute "
+        "error.",
+        "Observations · Raw (default): the observation as reported, the model "
+        "value as it is.",
+        "Observations · Height-corrected (2 m temperature only): t* = t + "
+        "0.0065 K/m · (e_model − e_station) (ECMWF TM865 Eq. 2), with e_model from "
+        "ERA5 orography as a proxy for each model's own; stations without an "
+        "elevation or an orography cell are excluded and counted in the footer.",
+        "Observations · Representativeness: the perturbed-ensemble method of ECMWF "
+        "Technical Memorandum 865 (Ben Bouallègue 2020) — members perturbed by the "
+        "observation uncertainty, with ΔA the model's native grid spacing "
+        f"({spacing}); a deterministic model is expanded to "
+        f"{SCORECARD_DETERMINISTIC_DRAWS} perturbed draws. Contingency scores "
+        "(ETS, HSS, POD, FAR, frequency bias) stay raw in every mode.",
+        "Significance (relative view, dot = significant): paired circular "
+        f"moving-block bootstrap over runs, blocks of {boot['block_days']} days, "
+        f"{boot['resamples']} resamples, {boot['level'] * 100:g} % interval, "
+        f"each pair weighted equally, against {GRID_STORES[_BASELINE]['label']} "
+        "on the pairs both models share; fewer than "
+        f"{SCORECARD_MIN_INITS} common runs: not assessed.",
+        "Persistence: the observation 24·⌈lead/24⌉ h before the valid time; skill "
+        "against it uses only pairs that have one.",
+        f"Too few: a cell resting on fewer than {_MIN_N} pairs or "
+        f"{SCORECARD_MIN_INITS} runs carries a cross and “(n<min)” in the hover.",
+    ]
+
+
+def _method_note() -> dmc.Accordion:
+    return dmc.Accordion(
+        dmc.AccordionItem(
+            [
+                dmc.AccordionControl("Method"),
+                dmc.AccordionPanel(
+                    dmc.List(
+                        [dmc.ListItem(line) for line in _method_lines()],
+                        size="sm",
+                        spacing=4,
+                    )
+                ),
+            ],
+            value="method",
+        ),
+        id="sc-method",
+        value=None,
+        variant="contained",
+        mt="sm",
+    )
+
+
+def _diagnostics_panel(
+    diurnal_score: str, rank_lead: str, threshold: str, lead_group: str
+) -> dmc.Stack:
+    """The Diagnostics tab: spread–error, diurnal, rank, reliability + ROC."""
+    return dmc.Stack(
+        [
+            html.Div(id="sc-diag-note"),
+            _graph("sc-spread", 520),
+            _labelled(
+                "Diurnal cycle of",
+                _segmented(
+                    "sc-diurnal-score",
+                    [{"value": k, "label": v} for k, v in _DIURNAL_SCORES.items()],
+                    diurnal_score,
+                ),
+            ),
+            _graph("sc-diurnal", 420),
+            _labelled(
+                "Rank histogram at",
+                _segmented("sc-rank-lead", _lead_data(list(_LEADS)), rank_lead),
+            ),
+            _graph("sc-rank", 560),
+            dmc.SimpleGrid(
+                [
+                    _labelled(
+                        "Event (24 h precipitation)",
+                        _segmented(
+                            "sc-threshold",
+                            [{"value": t, "label": f"≥ {t} mm"} for t in _THRESHOLDS],
+                            threshold,
+                        ),
+                    ),
+                    _labelled(
+                        "Lead days",
+                        _segmented(
+                            "sc-lead-group",
+                            [
+                                {"value": g, "label": g.replace("-", "–")}
+                                for g in _GROUPS
+                            ],
+                            lead_group,
+                        ),
+                    ),
+                ],
+                cols={"base": 1, "sm": 2},
+            ),
+            dmc.SimpleGrid(
+                [_graph("sc-reliability", 480), _graph("sc-roc", 480)],
+                cols={"base": 1, "md": 2},
+            ),
+        ],
+        gap="sm",
     )
 
 
@@ -187,12 +443,15 @@ def layout(**query_params):
     variable = query_choice(
         query_params, "variable", [o["value"] for o in variables], _DEFAULT_VARIABLE
     )
-    score = query_choice(
-        query_params,
-        "score",
-        [o["value"] for o in _score_options(variable)],
-        _score_options(variable)[0]["value"],
+    scores = [o["value"] for o in _flat_score_options(variable)]
+    score = query_choice(query_params, "score", scores, scores[0])
+    obs_mode = query_choice(
+        query_params, "obs", scorecard.obs_modes(variable), _DEFAULT_MODE
     )
+    diurnal_score = query_choice(query_params, "diurnal", _DIURNAL_SCORES, "bias")
+    rank_lead = query_choice(query_params, "rank", _LEADS, _DEFAULT_LEAD)
+    threshold = query_choice(query_params, "thr", _THRESHOLDS, _THRESHOLDS[0])
+    lead_group = query_choice(query_params, "group", _GROUPS, _GROUPS[0])
     period = query_choice(
         query_params,
         "period",
@@ -250,6 +509,20 @@ def layout(**query_params):
                 data=_score_options(variable),
                 value=score,
                 allowDeselect=False,
+            ),
+            dmc.Stack(
+                [
+                    dmc.Text("Observations", size="sm", fw=500),
+                    dmc.SegmentedControl(
+                        id="sc-obs-mode",
+                        data=_obs_mode_data(variable),
+                        value=obs_mode,
+                        orientation="vertical",
+                        fullWidth=True,
+                        size="xs",
+                    ),
+                ],
+                gap=4,
             ),
             "When",
             dmc.Stack(
@@ -332,15 +605,24 @@ def layout(**query_params):
                             dmc.TabsTab("Scorecard", value="card"),
                             dmc.TabsTab("By lead", value="lead"),
                             dmc.TabsTab("Stations", value="stations"),
+                            dmc.TabsTab("Diagnostics", value="diagnostics"),
                         ]
                     ),
                     dmc.TabsPanel(_graph("sc-heat"), value="card", pt="sm"),
                     dmc.TabsPanel(_graph("sc-lines"), value="lead", pt="sm"),
                     dmc.TabsPanel(_graph("sc-map"), value="stations", pt="sm"),
+                    dmc.TabsPanel(
+                        _diagnostics_panel(
+                            diurnal_score, rank_lead, threshold, lead_group
+                        ),
+                        value="diagnostics",
+                        pt="sm",
+                    ),
                 ],
                 value="card",
                 keepMounted=True,
             ),
+            _method_note(),
         ],
         graph_id="sc-heat",
         share_target="sc-current-url",
@@ -358,8 +640,22 @@ def options_for_variable(variable, score):
     options = _score_options(variable)
     if not options:
         return no_update, no_update
-    valid = [o["value"] for o in options]
+    valid = [o["value"] for o in _flat_score_options(variable)]
     return options, score if score in valid else valid[0]
+
+
+@callback(
+    Output("sc-obs-mode", "data"),
+    Output("sc-obs-mode", "value"),
+    Input("sc-variable", "value"),
+    State("sc-obs-mode", "value"),
+)
+def options_for_obs_mode(variable, current):
+    """Disable the modes the variable lacks; a disabled choice falls back to raw."""
+    if variable not in SCORECARD_VARIABLES:
+        return no_update, no_update
+    offered = scorecard.obs_modes(variable)
+    return _obs_mode_data(variable), current if current in offered else _DEFAULT_MODE
 
 
 @callback(
@@ -411,15 +707,15 @@ def options_for_lead(variable, period, models, current):
     Input("sc-models", "value"),
     Input("sc-lead", "value"),
     Input("sc-map-model", "value"),
+    Input("sc-obs-mode", "value"),
 )
-def update_scorecard(variable, score, period, display, models, lead, map_model):
+def update_scorecard(
+    variable, score, period, display, models, lead, map_model, obs_mode
+):
     """Filter the precomputed aggregates and draw the three views."""
-    if (
-        variable not in SCORECARD_VARIABLES
-        or score not in SCORECARD_VARIABLES[variable]["scores"]
-    ):
+    if variable not in SCORECARD_VARIABLES or score not in _offered_scores(variable):
         return (no_update,) * 5
-    if period not in _PERIODS or lead not in _LEADS:
+    if period not in _PERIODS or lead not in _LEADS or obs_mode not in SCORECARD_MODES:
         return (no_update,) * 5
     loaded, load_error = _load()
     if load_error:
@@ -441,31 +737,31 @@ def update_scorecard(variable, score, period, display, models, lead, map_model):
     note = dmc.Alert(absent_note, color="yellow", mb="xs") if absent_note else []
     days = int(period)
     relative = display == "relative"
+    mode = obs_mode
     try:
-        lead_rows = _select(agg, "lead", variable, days, stores)
+        lead_rows = _select(agg, "lead", variable, days, stores, mode)
         card_stores = (
             [*stores, _BASELINE] if relative and _BASELINE not in stores else stores
         )
-        card_rows = _select(agg, "lead", variable, days, card_stores)
-        context = {
-            "n_stations": int(lead_rows["n_stations"].max()) if len(lead_rows) else 0,
-            "period_days": days,
-            "init_hour": SCORECARD_INIT_HOUR,
-            "end": pd.Timestamp(meta["end"]),
-            "baseline": _BASELINE,
-            "absent_note": absent_note,
-        }
+        card_rows = _select(agg, "lead", variable, days, card_stores, mode)
+        context = _context(meta, lead_rows, days, absent_note)
         heat_ctx = {
             **context,
-            "relative_rows": _select(agg, "lead_relative", variable, days, card_stores),
+            "relative_rows": _select(
+                agg, "lead_relative", variable, days, card_stores, mode
+            ),
         }
-        heat = make_scorecard_fig(card_rows, variable, score, relative, heat_ctx)
-        lines = make_score_lead_fig(lead_rows, variable, score, context)
+        heat = make_scorecard_fig(
+            card_rows, variable, score, relative, heat_ctx, mode=mode
+        )
+        lines = make_score_lead_fig(lead_rows, variable, score, context, mode=mode)
         model = map_model if map_model in stores else stores[0]
-        stations = _select(agg, "station", variable, days, [model])
+        stations = _select(agg, "station", variable, days, [model], mode)
         stations = stations[stations["lead_day"] == int(lead)]
         station_ctx = {**context, "lead": f"day {lead}, {GRID_STORES[model]['label']}"}
-        station_map = make_station_score_map(stations, variable, score, station_ctx)
+        station_map = make_station_score_map(
+            stations, variable, score, station_ctx, mode=mode
+        )
     except (KeyError, ValueError) as err:
         empty = make_empty_fig("No data available")
         alert = dmc.Alert(
@@ -475,15 +771,115 @@ def update_scorecard(variable, score, period, display, models, lead, map_model):
     return heat, lines, station_map, note, provenance
 
 
-url_sync(
-    "sc-current-url",
-    {
-        "sc-variable": "variable",
-        "sc-score": "score",
-        "sc-period": "period",
-        "sc-display": "display",
-        "sc-models": "models",
-        "sc-lead": "lead",
-        "sc-map-model": "mapmodel",
-    },
+@callback(
+    Output("sc-spread", "figure"),
+    Output("sc-diurnal", "figure"),
+    Output("sc-rank", "figure"),
+    Output("sc-reliability", "figure"),
+    Output("sc-roc", "figure"),
+    Output("sc-diag-note", "children"),
+    Input("sc-variable", "value"),
+    Input("sc-period", "value"),
+    Input("sc-obs-mode", "value"),
+    Input("sc-models", "value"),
+    Input("sc-diurnal-score", "value"),
+    Input("sc-rank-lead", "value"),
+    Input("sc-threshold", "value"),
+    Input("sc-lead-group", "value"),
 )
+def update_diagnostics(
+    variable, period, obs_mode, models, diurnal_score, rank_lead, threshold, lead_group
+):
+    """Draw the four Diagnostics panels from the precomputed aggregates."""
+    if (
+        variable not in SCORECARD_VARIABLES
+        or period not in _PERIODS
+        or obs_mode not in SCORECARD_MODES
+        or diurnal_score not in _DIURNAL_SCORES
+        or rank_lead not in _LEADS
+        or threshold not in _THRESHOLDS
+        or lead_group not in _GROUPS
+    ):
+        return (no_update,) * 6
+    loaded, load_error = _load()
+    if load_error:
+        empty = make_empty_fig("Scorecard file unreadable")
+        return (empty,) * 5 + (dmc.Alert(load_error, color="red", mb="xs"),)
+    if loaded is None:
+        empty = make_empty_fig("No scorecard published yet")
+        return (empty,) * 5 + (dmc.Alert(_MISSING, color="red", mb="xs"),)
+    agg, meta = loaded
+    stores = [s for s in SCORECARD_STORES if s in (models or [])]
+    if not stores:
+        return (make_empty_fig("Select at least one model"),) * 5 + ([],)
+    mode = obs_mode
+    days = int(period)
+    notes = scorecard.diagnostic_notes(variable, stores, mode)
+    absent_note = _absent_note(meta, variable, stores)
+
+    def rows(kind: str) -> pd.DataFrame:
+        return _select(agg, kind, variable, days, stores, mode)
+
+    try:
+        context = _context(meta, rows("lead"), days, absent_note)
+        spread = (
+            make_empty_fig(notes["spread_error"])
+            if notes["spread_error"]
+            else make_spread_error_fig(rows("lead"), variable, mode, context=context)
+        )
+        diurnal = (
+            make_empty_fig(notes["diurnal"])
+            if notes["diurnal"]
+            else make_diurnal_fig(
+                rows("diurnal"), variable, diurnal_score, mode, context=context
+            )
+        )
+        rank = make_rank_histogram_fig(
+            rows("rank"), variable, int(rank_lead), mode, context=context
+        )
+        if notes["reliability"]:
+            reliability = roc = make_empty_fig(notes["reliability"])
+        else:
+            reliability = make_reliability_fig(
+                rows("reliability"),
+                variable,
+                float(threshold),
+                lead_group,
+                mode,
+                context=context,
+            )
+            roc = make_roc_fig(
+                rows("roc"),
+                variable,
+                float(threshold),
+                lead_group,
+                mode,
+                context=context,
+            )
+    except (KeyError, ValueError) as err:
+        empty = make_empty_fig("No data available")
+        alert = dmc.Alert(
+            f"The diagnostics could not be drawn: {err}", color="red", mb="xs"
+        )
+        return (empty,) * 5 + (alert,)
+    shown = [n for n in (absent_note, notes["deterministic"]) if n]
+    note = [dmc.Alert(n, color="yellow", mb="xs") for n in shown]
+    return spread, diurnal, rank, reliability, roc, note
+
+
+# Control id -> query key, in the order written to the URL.
+URL_KEYS: dict[str, str] = {
+    "sc-variable": "variable",
+    "sc-score": "score",
+    "sc-obs-mode": "obs",
+    "sc-period": "period",
+    "sc-display": "display",
+    "sc-models": "models",
+    "sc-lead": "lead",
+    "sc-map-model": "mapmodel",
+    "sc-diurnal-score": "diurnal",
+    "sc-rank-lead": "rank",
+    "sc-threshold": "thr",
+    "sc-lead-group": "group",
+}
+url_sync("sc-current-url", URL_KEYS)

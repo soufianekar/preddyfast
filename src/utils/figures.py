@@ -2160,6 +2160,11 @@ def _score_text(score: str, variable: str) -> tuple[str, str]:
     return f"{_THRESHOLD_SCORE_LABELS[base]} (≥ {threshold} {unit})", ""
 
 
+def score_label(score: str, variable: str) -> str:
+    """Display name of a scorecard score for one variable (the figures' own)."""
+    return _score_text(score, variable)[0]
+
+
 def _rows_applied(rows: pd.DataFrame) -> bool:
     """Whether every row applied its display mode (old files: no column = raw)."""
     if "mode_applied" not in rows or rows.empty:

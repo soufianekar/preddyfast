@@ -125,7 +125,7 @@ def page(env):
 def _call(page, **kw):
     args = {"variable": "temperature_2m", "score": "rmse", "period": str(SCORECARD_DAYS),
             "display": "relative", "models": ["ifs_ens", "gefs"], "lead": "3",
-            "map_model": "gefs"}
+            "map_model": "gefs", "obs_mode": "raw"}
     args.update(kw)
     return page.update_scorecard(**args)
 
@@ -187,12 +187,13 @@ def test_invalid_score_for_variable_is_ignored_by_the_figure_callback(page):
 
 def test_changing_variable_resets_an_invalid_score(page):
     data, value = page.options_for_variable("precipitation_24h", "rmse")
-    assert value == "mae" and "rmse" not in [o["value"] for o in data]
+    flat = [o["value"] for g in data for o in g["items"]]
+    assert value == "mae" and "rmse" not in flat
     assert page.options_for_variable("wind_speed_10m", "crps")[1] == "crps"
 
 
 def test_score_labels_carry_their_direction(page):
-    labels = {o["value"]: o["label"] for o in page._score_options("precipitation_24h")}
+    labels = {o["value"]: o["label"] for o in page._flat_score_options("precipitation_24h")}
     assert labels["mae"] == "MAE (lower is better)"
     assert labels["brier"] == "fair Brier ≥ 1 mm/24 h (lower is better)"
     assert labels["frequency_bias"].endswith("(ideal 1)")
@@ -409,3 +410,202 @@ def test_page_reads_raw_rows_only_and_old_files_default_to_raw(full_env, page):
     pq.write_table(table, scorecard.aggregates_path())
     again, _ = scorecard.load_aggregates()
     assert set(again["mode"]) == {"raw"} and again["mode_applied"].all()
+
+
+# --- Task 7: observations mode, Diagnostics tab, significance, method note -------
+
+
+def _find(component, component_id):
+    """The component with `component_id` anywhere under `component`, or None."""
+    if getattr(component, "id", None) == component_id:
+        return component
+    children = getattr(component, "children", None)
+    if children is None:
+        return None
+    for child in children if isinstance(children, (list, tuple)) else [children]:
+        found = _find(child, component_id)
+        if found is not None:
+            return found
+    return None
+
+
+def test_obs_modes_offer_height_correction_for_temperature_only():
+    from utils.settings import SCORECARD_MODES
+
+    assert scorecard.obs_modes("temperature_2m") == SCORECARD_MODES
+    for variable in ("wind_speed_10m", "precipitation_24h", "z500"):
+        assert scorecard.obs_modes(variable) == ("raw", "representativeness")
+
+
+def test_layout_obs_mode_defaults_to_raw_and_reads_the_query(page):
+    assert _find(page.layout(), "sc-obs-mode").value == "raw"
+    assert _find(page.layout(obs="nope"), "sc-obs-mode").value == "raw"
+    hc = _find(page.layout(obs="height_corrected"), "sc-obs-mode")
+    assert hc.value == "height_corrected"
+    wind = page.layout(obs="height_corrected", variable="wind_speed_10m")
+    assert _find(wind, "sc-obs-mode").value == "raw"
+    disabled = {d["value"]: d.get("disabled", False) for d in _find(wind, "sc-obs-mode").data}
+    assert disabled == {"raw": False, "height_corrected": True, "representativeness": False}
+    assert _find(page.layout(obs="representativeness"), "sc-obs-mode").value == (
+        "representativeness"
+    )
+
+
+def test_height_corrected_is_disabled_and_falls_back_for_wind_and_precip(page):
+    for variable in ("wind_speed_10m", "precipitation_24h"):
+        data, value = page.options_for_obs_mode(variable, "height_corrected")
+        assert value == "raw"
+        assert next(d for d in data if d["value"] == "height_corrected")["disabled"]
+        assert page.options_for_obs_mode(variable, "representativeness")[1] == (
+            "representativeness"
+        )
+    data, value = page.options_for_obs_mode("temperature_2m", "height_corrected")
+    assert value == "height_corrected" and not any(d.get("disabled") for d in data)
+    assert page.options_for_obs_mode(None, "raw") == (dash.no_update, dash.no_update)
+
+
+def test_obs_mode_is_in_the_url(page):
+    assert page.URL_KEYS["sc-obs-mode"] == "obs"
+
+
+def test_switching_mode_changes_the_footer(full_env, page):
+    scorecard.write_aggregates(TODAY)
+    raw = _call(page, obs_mode="raw")
+    hc = _call(page, obs_mode="height_corrected")
+    for fig in raw[:3]:
+        assert "Mode: raw" in figures_text(fig)
+    for fig in hc[:3]:
+        text = figures_text(fig)
+        assert "height-corrected with ERA5 orography" in text
+        assert "1 station without elevation or orography excluded" in text
+    pert = _call(page, obs_mode="representativeness")[0]
+    assert "TM865" in figures_text(pert)
+    assert _call(page, obs_mode="bogus") == (dash.no_update,) * 5
+
+
+def test_height_corrected_heatmap_shows_hc_values(full_env, page):
+    agg, _ = _agg()
+    heat_raw = _call(page, display="absolute", score="bias", obs_mode="raw")[0]
+    heat_hc = _call(page, display="absolute", score="bias", obs_mode="height_corrected")[0]
+    assert not np.allclose(
+        np.asarray(heat_raw.data[0].z, dtype=float),
+        np.asarray(heat_hc.data[0].z, dtype=float),
+        equal_nan=True,
+    )
+
+
+def test_score_select_offers_new_scores_grouped_by_threshold(page):
+    t2m = [o["value"] for o in page._flat_score_options("temperature_2m")]
+    assert {"rmse", "error_sd", "spread_error", "rmse_ss_persist", "crpss_persist"} <= set(t2m)
+    groups = page._score_options("precipitation_24h")
+    names = [g["group"] for g in groups]
+    assert names == ["Amounts · headline events ≥ 1 mm", "≥ 1 mm", "≥ 5 mm", "≥ 10 mm"]
+    five = {o["value"]: o["label"] for o in groups[2]["items"]}
+    assert set(five) == {"ets_5", "fbi_5", "pod_5", "far_5", "brier_5", "roc_area_5"}
+    assert five["brier_5"] == "Fair Brier score (≥ 5 mm) (lower is better)"
+    assert "crpss_persist" in [o["value"] for o in groups[0]["items"]]
+    data, value = page.options_for_variable("temperature_2m", "ets_5")
+    assert value == "rmse"
+    assert page.options_for_variable("precipitation_24h", "roc_area_10")[1] == "roc_area_10"
+
+
+def test_new_scores_draw_on_every_view(full_env, page):
+    scorecard.write_aggregates(TODAY)
+    for variable, score in (("temperature_2m", "rmse_ss_persist"),
+                            ("temperature_2m", "error_sd"),
+                            ("precipitation_24h", "ets_5"),
+                            ("precipitation_24h", "crpss_persist")):
+        heat, lines, smap, alert, _ = _call(page, variable=variable, score=score,
+                                            display="absolute")
+        assert getattr(alert, "color", None) != "red", (variable, score)
+        assert any(t.type == "heatmap" for t in heat.data), (variable, score)
+
+
+def test_relative_heatmap_marks_significance_from_stored_rows(full_env, page):
+    scorecard.write_aggregates(TODAY)
+    heat = _call(page, display="relative", score="rmse", models=["gefs"])[0]
+    hover = " ".join(str(c) for t in heat.data for c in np.ravel(t.customdata if t.customdata is not None else []))
+    assert "significant at 95 %" in hover
+    assert "pairs both models share" in hover
+
+
+def _diag(page, **kw):
+    args = {"variable": "temperature_2m", "period": str(SCORECARD_DAYS),
+            "obs_mode": "raw", "models": ["ifs_ens", "gefs", "gfs"],
+            "diurnal_score": "bias", "rank_lead": "3", "threshold": "1",
+            "lead_group": "1-3"}
+    args.update(kw)
+    return page.update_diagnostics(**args)
+
+
+def test_diagnostics_return_figures_on_the_real_schema(full_env, page):
+    import plotly.graph_objects as go
+
+    scorecard.write_aggregates(TODAY)
+    for variable in ("temperature_2m", "precipitation_24h"):
+        for mode in scorecard.obs_modes(variable):
+            for score in ("bias", "error_sd"):
+                out = _diag(page, variable=variable, obs_mode=mode, diurnal_score=score)
+                assert len(out) == 6
+                assert all(isinstance(f, go.Figure) for f in out[:5])
+    spread, diurnal, rank, rel, roc, note = _diag(page)
+    assert any(t.type == "scatter" for t in spread.data)
+    assert any(t.type == "scatter" for t in diurnal.data)
+    assert any(t.type == "bar" for t in rank.data)
+    assert "Mode: raw" in figures_text(rank)
+    # Reliability / ROC are for precipitation: a note on temperature.
+    assert "precipitation" in " ".join(a.text for a in rel.layout.annotations)
+    assert "precipitation" in " ".join(a.text for a in roc.layout.annotations)
+    # GFS is deterministic: absent from rank/reliability in raw mode, said so.
+    assert "NOAA GFS" in str(note) and "deterministic" in str(note)
+    pert = _diag(page, obs_mode="representativeness")[5]
+    assert "NOAA GFS" not in str(pert)
+    p_spread, p_diurnal, p_rank, p_rel, p_roc, _ = _diag(
+        page, variable="precipitation_24h", threshold="5", lead_group="4-7"
+    )
+    assert any(t.type == "scatter" for t in p_rel.data)
+    assert any(t.type == "scatter" for t in p_roc.data)
+    assert "diurnal" in " ".join(a.text for a in p_diurnal.layout.annotations).lower()
+
+
+def test_diagnostics_never_raise(page):
+    out = _diag(page)  # no aggregates file
+    assert getattr(out[5], "color", None) == "yellow"
+    scorecard.write_aggregates(TODAY)
+    scorecard.aggregates_path().write_bytes(b"not parquet")
+    assert getattr(_diag(page)[5], "color", None) == "red"
+    for bad in ({"variable": None}, {"period": None}, {"obs_mode": "x"},
+                {"rank_lead": "7"}, {"threshold": None}, {"lead_group": "2-9"},
+                {"diurnal_score": "crps"}):
+        assert _diag(page, **bad) == (dash.no_update,) * 6
+    out = _diag(page, models=[])
+    assert len(out) == 6
+
+
+def test_diagnostic_notes_are_pure_and_per_variable():
+    notes = scorecard.diagnostic_notes("temperature_2m", ["ifs_ens", "gfs"], "raw")
+    assert notes["spread_error"] is None and notes["diurnal"] is None
+    assert "precipitation" in notes["reliability"]
+    assert "NOAA GFS" in notes["deterministic"]
+    assert scorecard.diagnostic_notes("temperature_2m", ["gfs"], "representativeness")[
+        "deterministic"] is None
+    precip = scorecard.diagnostic_notes("precipitation_24h", ["ifs_ens"], "raw")
+    assert precip["reliability"] is None and precip["deterministic"] is None
+    assert "06 UTC" in precip["diurnal"] and precip["spread_error"]
+
+
+def test_method_note_lists_every_method(page):
+    text = str(_find(page.layout(), "sc-method"))
+    for words in ("nearest grid cell", "00/06/12/18 UTC", "06 UTC", "never hourly sums",
+                  "fair CRPS", "0.0065 K/m", "ERA5 orography", "TM865",
+                  "Ben Bouallègue", "ECMWF IFS ENS 9 km", "DWD ICON-EU 6.5 km",
+                  "moving-block bootstrap", "3 days", "1000", "95 %",
+                  "24·⌈lead/24⌉", "50 pairs", "5 runs"):
+        assert words in text, words
+    assert _find(page.layout(), "sc-method").value is None  # collapsed
+
+
+def test_deterministic_note_stays_when_representativeness_falls_back_to_raw():
+    """Z500 has no TM865 model: its deterministic stores still have no ranks."""
+    notes = scorecard.diagnostic_notes("z500", ["ifs_ens", "gfs"], "representativeness")
+    assert "NOAA GFS" in notes["deterministic"]

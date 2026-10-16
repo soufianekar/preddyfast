@@ -815,6 +815,90 @@ def mode_columns(variable: str, mode: str) -> dict[str, str | bool]:
     return cols
 
 
+def obs_modes(variable: str) -> tuple[str, ...]:
+    """Display modes the page offers for a variable.
+
+    Height correction only where it applies (`mode_columns`: 2 m temperature).
+    Representativeness is always offered; a variable without a TM865 model
+    (Z500) is then drawn raw and its footer says so.
+    """
+    return tuple(
+        mode
+        for mode in SCORECARD_MODES
+        if mode != "height_corrected" or mode_columns(variable, mode)["applied"]
+    )
+
+
+def diagnostic_notes(
+    variable: str, stores: list[str], mode: str
+) -> dict[str, str | None]:
+    """What each Diagnostics panel cannot show for this choice, in words.
+
+    Parameters
+    ----------
+    variable : str
+        `SCORECARD_VARIABLES` key.
+    stores : list of str
+        Selected `GRID_STORES` keys.
+    mode : str
+        One of `SCORECARD_MODES`.
+
+    Returns
+    -------
+    dict
+        `spread_error`, `diurnal`, `reliability` (also ROC): a note when the
+        panel does not apply to the variable, else None. `deterministic`: the
+        selected deterministic models the rank histogram, reliability and ROC
+        leave out (no members, no event probability) unless representativeness
+        applies to the variable and expands them to a perturbed ensemble.
+    """
+    spec = SCORECARD_VARIABLES[variable]
+    label = spec["label"]
+    offered = {*spec["scores"], *spec["extra_scores"]}
+    notes: dict[str, str | None] = {
+        "spread_error": (
+            None
+            if "spread_error" in offered
+            else f"Spread–error is not computed for {label}."
+        ),
+        "diurnal": None,
+        "reliability": None,
+        "deterministic": None,
+    }
+    if spec["window_hours"]:
+        end = spec["window_end_hour"]
+        when = f", ending {end:02d} UTC" if end is not None else ""
+        notes["diurnal"] = (
+            f"No diurnal cycle for {label}: one {spec['window_hours']} h window "
+            f"per day{when}."
+        )
+    if not spec["thresholds"]:
+        events = "; ".join(
+            f"{v['label']} ≥ {'/'.join(f'{t:g}' for t in v['thresholds'])} "
+            f"{v['unit']}"
+            for v in SCORECARD_VARIABLES.values()
+            if v["thresholds"]
+        )
+        notes["reliability"] = (
+            f"Reliability and ROC are drawn for events only ({events}), not for "
+            f"{label}."
+        )
+    deterministic = [
+        GRID_STORES[s]["label"]
+        for s in stores
+        if GRID_STORES.get(s, {}).get("kind") == "deterministic"
+    ]
+    expanded = mode == "representativeness" and mode_columns(variable, mode)["applied"]
+    if deterministic and not expanded:
+        notes["deterministic"] = (
+            f"Not in the rank histogram, reliability or ROC: "
+            f"{', '.join(deterministic)} — a deterministic forecast has no rank "
+            "or event probability in this mode. Representativeness (TM865) "
+            "expands it to a perturbed ensemble."
+        )
+    return notes
+
+
 def _store_members(store: str, perturbed: bool) -> float:
     """Member count of a store when a row file lacks it (older row versions)."""
     m = float(GRID_STORES.get(store, {}).get("members", 1))
