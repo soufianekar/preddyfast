@@ -587,8 +587,9 @@ def test_diagnostics_return_figures_on_the_real_schema(full_env, page):
 
 
 def test_diagnostics_never_raise(page):
-    out = _diag(page)  # no aggregates file
-    assert getattr(out[5], "color", None) == "yellow"
+    out = _diag(page)  # nothing published yet
+    assert getattr(out[5], "color", None) == "red"
+    assert out[5].children == page._MISSING
     scorecard.write_aggregates(TODAY)
     scorecard.aggregates_path().write_bytes(b"not parquet")
     assert getattr(_diag(page)[5], "color", None) == "red"

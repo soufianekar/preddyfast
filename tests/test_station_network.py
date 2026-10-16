@@ -479,7 +479,7 @@ def test_rule_fingerprint_follows_every_deciding_input(monkeypatch):
 
 
 def test_save_network_records_the_rule_hash(monkeypatch, tmp_path):
-    monkeypatch.setattr(sn, "SCORES_DIR", str(tmp_path))
+    monkeypatch.setattr(sn, "SCORECARD_DIR", str(tmp_path))
     assert sn.load_rule_hash() is None
     net = (
         _stations(1)
@@ -519,7 +519,7 @@ def test_rule_fingerprint_ignores_non_selector_keys(monkeypatch):
 
 
 def test_corrupt_sidecar_never_raises(monkeypatch, tmp_path):
-    monkeypatch.setattr(sn, "SCORES_DIR", str(tmp_path))
+    monkeypatch.setattr(sn, "SCORECARD_DIR", str(tmp_path))
     net = (
         _stations(1)
         .drop(columns="country")

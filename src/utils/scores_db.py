@@ -229,7 +229,7 @@ def prune_unconfigured_variables(variables: list[str] | tuple[str, ...]) -> int:
     """
     keep = {_safe(v) for v in variables}
     removed = 0
-    for folder in (Path(SCORES_DIR) / _SCORECARD_ROOT).glob("*/*"):
+    for folder in scorecard_root().glob("*/*"):
         if not folder.is_dir() or folder.name in keep:
             continue
         for path in folder.glob("*.parquet"):
