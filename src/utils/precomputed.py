@@ -15,6 +15,7 @@ so a precomputed frame and a live one mean the same colours.
 from __future__ import annotations
 
 import base64
+import copy
 import functools
 import io
 import json
@@ -241,6 +242,21 @@ def record(
 def is_current(manifest: dict, store: str, init: pd.Timestamp) -> bool:
     entry = manifest["stores"].get(store)
     return bool(entry) and entry["init"] == f"{pd.Timestamp(init):%Y-%m-%dT%H:%M}"
+
+
+def merge_manifest(base: dict, part: dict) -> dict:
+    """`base` with each of `part`'s stores where `part` holds a run at least as new.
+
+    The publish job merges every producer job's manifest into the one mirrored
+    from the Dataset: a job that failed or skipped a store leaves that store's
+    published entry (and so its frames) in place.
+    """
+    out = {"stores": copy.deepcopy(base.get("stores", {}))}
+    for store, entry in part.get("stores", {}).items():
+        held = out["stores"].get(store)
+        if held is None or entry["init"] >= held["init"]:
+            out["stores"][store] = copy.deepcopy(entry)
+    return out
 
 
 def current_init(stores: tuple[str, ...], run: str | None) -> pd.Timestamp | None:
