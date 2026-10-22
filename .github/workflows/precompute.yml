@@ -17,7 +17,8 @@
 # artifact (a "part"); none uploads to the Dataset. The publish job then
 # downloads every part, merges them with the Dataset's mirror, and uploads
 # once, only the files that changed: no two jobs ever write the same file or
-# race on the Dataset.
+# race on the Dataset. A producer that fails still lets publish run; the
+# stores it owned keep their published entries and frames.
 #
 # Every job first mirrors what the Dataset already holds, so a store whose
 # newest run is already published or a gallery month already drawn is
@@ -100,8 +101,9 @@ jobs:
           name: part-${{ strategy.job-index }}
           path: .precomputed
           retention-days: 1
-          include-hidden-files: false
-          if-no-files-found: ignore
+          include-hidden-files: true
+          if-no-files-found: warn
+          overwrite: true
 
   scorecard:
     if: ${{ github.event_name == 'schedule' || inputs.scorecard || inputs.backfill }}
@@ -157,8 +159,9 @@ jobs:
           name: part-scorecard
           path: .precomputed
           retention-days: 1
-          include-hidden-files: false
-          if-no-files-found: ignore
+          include-hidden-files: true
+          if-no-files-found: warn
+          overwrite: true
 
   maps:
     if: ${{ (inputs.maps && !inputs.backfill) || github.event_name == 'schedule' }}
@@ -195,12 +198,13 @@ jobs:
           name: part-maps
           path: .precomputed
           retention-days: 1
-          include-hidden-files: false
-          if-no-files-found: ignore
+          include-hidden-files: true
+          if-no-files-found: warn
+          overwrite: true
 
   publish:
     needs: [animations, scorecard, maps]
-    if: ${{ always() && (inputs.upload || github.event_name == 'schedule') }}
+    if: ${{ !cancelled() && (inputs.upload || github.event_name == 'schedule') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
