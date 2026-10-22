@@ -31,41 +31,6 @@ that does the expensive work offline.
 | **Weather · Evaluation** | A station scorecard: seven archived models (IFS ENS, AIFS ENS, GEFS, IFS control, AIFS Single, GFS, ICON-EU) scored over the latest 14 days of 00 UTC runs at eight European city airports, by lead day — 2 m temperature, 6 h precipitation and 10 m wind against hourly reports (NOAA GHCNh), Z500 against IFS control T+0. RMSE, MAE, bias, fair CRPS, bias-corrected RMSE/MAE, spread/skill, ETS, HSS, frequency bias, Brier; absolute or relative to IFS ENS, and per station on a map. | Same archives, GHCNh |
 | **Climate · Maps** | ERA5 monthly maps for the latest month: temperature and precipitation anomalies against 1991–2020, Europe and global. | Copernicus Climate Data Store |
 
-## The decisions that matter
-
-The interesting part of this project is less the plots than the rules behind
-them. Each of these is enforced in code and covered by tests (`pytest -q`).
-
-- **Systems are compared, never pooled.** Each ensemble keeps its own colour,
-  members and statistics. A mean across systems is not a meteorological
-  quantity, so none is ever drawn. Member counts are read from each response,
-  never assumed.
-- **Reduce space before taking percentiles.** An area average is computed per
-  member (cos φ-weighted, or over the region's polygon), and percentiles are
-  taken across members afterwards. The other order gives a per-gridpoint
-  patchwork that matches no member and is too wide at the tails.
-- **Every number says where it came from.** Subtitles carry the model, the init
-  time, the area and its weighting, the grid spacing actually drawn, the
-  reference period and the accumulation window. A figure that drops part of the
-  request (a clipped domain, a thinned grid, a capped colour scale) says so.
-- **Accumulations are built, not assumed.** A window total is `cum(L) − cum(L−P)`
-  only where both ends are real steps. Every store's `step_type` is checked
-  before a rate is converted (ERA5 monthly `avgad` is already per day: a silent
-  factor of 24 otherwise). Meteogram windows are disjoint and area-average
-  windows rolling, because overlapping boxes would invite reading the window
-  sliding as signal.
-- **Verification states its own bias.** Ensembles are scored with the fair CRPS
-  on their own members; a deterministic model's CRPS is its MAE, and the
-  figure says so. Models are compared on the inits they all hold. Each station
-  is scored at its own grid cell in each model's grid, without interpolation or
-  height correction, and the figures say that too. Z500 has no station
-  observation: its IFS-control T+0 reference favours IFS and AIFS, stated in
-  the footer. Precipitation is verified only where a complete 6 h window
-  exists: the station's reported total, else complete hourly sums, never a T+0.
-- **Reads are budgeted before they happen.** Every gridded request is costed in
-  MB from each store's own chunking (tiles × lead blocks × member blocks) and
-  refused with the estimate when over budget. Nothing is read first.
-
 ## How it runs for free
 
 | Piece | Service |
