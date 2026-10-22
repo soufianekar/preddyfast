@@ -91,8 +91,9 @@ _SCORECARD_KEY = b"meteox_scorecard"
 def scorecard_root() -> Path:
     """The scheduled job's scorecard state: init files, network, window.
 
-    Outside `PRECOMPUTE_DIR`, so it is never uploaded or mirrored; the workflow
-    keeps it between runs with actions/cache. Only the aggregates are published.
+    Outside `PRECOMPUTE_DIR`, so it is never published; `scripts/state.py`
+    mirrors it to the private `PRECOMPUTE_HF_STATE_REPO` between runs. Only the
+    aggregates are published.
     """
     return Path(SCORECARD_DIR)
 

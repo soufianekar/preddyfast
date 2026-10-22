@@ -1787,12 +1787,16 @@ PRECOMPUTE_DIR: str = os.environ.get("PRECOMPUTE_DIR", ".precomputed")
 # station scorecard, which keeps its own state in SCORECARD_DIR.
 SCORES_DIR: str = os.environ.get("SCORES_DIR", f"{PRECOMPUTE_DIR}/scores")
 # The station scorecard job's working state (per-init rows, frozen network,
-# window). Outside PRECOMPUTE_DIR: never uploaded; the workflow keeps it with
-# actions/cache. Only its aggregates file is published (utils/scorecard.py).
+# window). Outside PRECOMPUTE_DIR: never published; scripts/state.py mirrors it
+# to the private PRECOMPUTE_HF_STATE_REPO. Only its aggregates file is published
+# (utils/scorecard.py).
 SCORECARD_DIR: str = os.environ.get("SCORECARD_DIR", ".scorecard")
 # The public Hugging Face Dataset the scheduled job uploads to and the app
 # mirrors metadata from ("user/name"); unset for a purely local run.
 PRECOMPUTE_HF_REPO: str = os.environ.get("PRECOMPUTE_HF_REPO", "")
+# Private Dataset holding the scorecard job's working state (scripts/state.py);
+# never the public products Dataset. Unset: no remote state.
+PRECOMPUTE_HF_STATE_REPO: str = os.environ.get("PRECOMPUTE_HF_STATE_REPO", "")
 # How often (s) the app re-mirrors the Dataset's manifests and scores.
 PRECOMPUTE_SYNC_S: float = float(os.environ.get("PRECOMPUTE_SYNC_S", "900"))
 # Where the browser fetches precomputed images: the Dataset when there is one,
