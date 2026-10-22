@@ -5,6 +5,7 @@ import flask
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from utils.cache import cache  # noqa: E402
 
