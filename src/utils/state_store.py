@@ -7,6 +7,10 @@ a generation counter make the mirror checkable: push refuses unless this
 directory was pulled successfully and nobody else pushed since. A failed pull
 followed by a push would otherwise delete every remote row the empty directory
 "lost".
+
+A push must never leave the remote unpullable: the HF backend commits files
+and manifest in one atomic commit, so an interrupted push leaves the previous
+state whole.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 MARKER = ".state-pulled.json"
 # Temporaries the writers rename into place (`scores_db` writes `*.<pid>.part`).
@@ -28,7 +32,7 @@ class StateError(RuntimeError):
 class Backend(Protocol):
     def read_manifest(self) -> dict | None: ...
 
-    def download(self, rel: str, dest: Path) -> None: ...
+    def download_all(self, wanted: dict[str, str], root: Path) -> None: ...
 
     def apply(
         self, uploads: dict[str, Path], deletes: list[str], manifest: dict
@@ -43,6 +47,16 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_state(path: Path, root: Path) -> bool:
+    """A file the mirror owns: not a temporary, not a dotfile (marker, .DS_Store)."""
+    parts = path.relative_to(root).parts
+    return (
+        path.is_file()
+        and not any(part.startswith(".") for part in parts)
+        and not path.name.endswith(_SKIP_SUFFIXES)
+    )
+
+
 def local_files(root: Path) -> dict[str, str]:
     """Relative POSIX path -> sha256 of every state file under `root`."""
     if not root.exists():
@@ -50,29 +64,34 @@ def local_files(root: Path) -> dict[str, str]:
     return {
         path.relative_to(root).as_posix(): _sha256(path)
         for path in sorted(root.rglob("*"))
-        if path.is_file()
-        and path.name != MARKER
-        and not path.name.endswith(_SKIP_SUFFIXES)
+        if _is_state(path, root)
     }
 
 
 def pull(root: Path, backend: Backend) -> int:
     """Restore `root` from the remote; returns the number of files in the state.
 
-    No remote manifest is a first run (generation 0). Files already present
-    with the right hash are kept. The marker is written only after every file
-    has arrived and matched its hash.
+    No remote manifest is a first run (generation 0): local files are kept so
+    they can seed the remote. Otherwise `root` is made to match the manifest,
+    including removing state files the remote no longer has. The marker is
+    written only after every file has arrived and matched its hash.
     """
     root.mkdir(parents=True, exist_ok=True)
     (root / MARKER).unlink(missing_ok=True)
-    manifest = backend.read_manifest() or {"generation": 0, "files": {}}
+    remote = backend.read_manifest()
+    manifest = remote or {"generation": 0, "files": {}}
     have = local_files(root)
-    for rel, sha in manifest["files"].items():
-        if have.get(rel) == sha:
-            continue
-        backend.download(rel, root / rel)
-        if _sha256(root / rel) != sha:
+    wanted = {
+        rel: sha for rel, sha in manifest["files"].items() if have.get(rel) != sha
+    }
+    if wanted:
+        backend.download_all(wanted, root)
+    for rel, sha in wanted.items():
+        if not (root / rel).exists() or _sha256(root / rel) != sha:
             raise StateError(f"Hash mismatch on {rel} after download.")
+    if remote is not None:
+        for rel in set(have) - set(manifest["files"]):
+            (root / rel).unlink()
     (root / MARKER).write_text(json.dumps({"generation": manifest["generation"]}))
     return len(manifest["files"])
 
@@ -105,7 +124,7 @@ def push(root: Path, backend: Backend) -> tuple[int, int]:
 class HfBackend:
     """A private Hugging Face Dataset; files and manifest land in one commit."""
 
-    def __init__(self, api, repo_id: str) -> None:
+    def __init__(self, api: Any, repo_id: str) -> None:
         self.api, self.repo_id = api, repo_id
 
     def read_manifest(self) -> dict | None:
@@ -127,16 +146,21 @@ class HfBackend:
                 return None
             return json.loads(Path(path).read_text())
 
-    def download(self, rel: str, dest: Path) -> None:
+    def download_all(self, wanted: dict[str, str], root: Path) -> None:
+        """One snapshot for every wanted file: per-file requests hit Hub rate limits."""
         import shutil
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
-            path = self.api.hf_hub_download(
-                repo_id=self.repo_id, filename=rel, repo_type="dataset", local_dir=tmp
+            self.api.snapshot_download(
+                repo_id=self.repo_id,
+                repo_type="dataset",
+                local_dir=tmp,
+                allow_patterns=list(wanted),
             )
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(path, dest)
+            for rel in wanted:
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(Path(tmp) / rel, root / rel)
 
     def apply(
         self, uploads: dict[str, Path], deletes: list[str], manifest: dict

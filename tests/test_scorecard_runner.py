@@ -556,3 +556,11 @@ def test_precip_only_rule_change_rereads_no_temperature_cube(env):
     assert env.selected == 2
     assert {c[1] for c in env.calls} <= {"precipitation_surface"}
     assert not any(c[1] == "temperature_2m" for c in env.calls)
+
+
+def test_empty_network_is_not_frozen_so_the_next_run_reselects(env):
+    env.net = _network(()).iloc[0:0]
+    assert scorecard.refresh(STORES, VARS, TODAY) == 0
+    assert env.saved is None
+    scorecard.refresh(STORES, VARS, TODAY)
+    assert env.selected == 2

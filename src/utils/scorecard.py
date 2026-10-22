@@ -1818,7 +1818,10 @@ def _network(
         )
     logger.info("Selecting the station network (%s)", why)
     net = station_network.select_network(start, end)
-    station_network.save_network(net, start, end, configured)
+    # An empty selection is an observation outage, not a network: frozen (and
+    # mirrored to the remote state), it would blank the scorecard for a window.
+    if not net.empty:
+        station_network.save_network(net, start, end, configured)
     return net
 
 
