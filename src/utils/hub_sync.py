@@ -58,8 +58,9 @@ def sync(force: bool = False) -> bool:
         return False
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.touch()
+    import httpx2  # the HTTP client of huggingface_hub 2.x
     from huggingface_hub import snapshot_download
-    from huggingface_hub.errors import HfHubHTTPError
+    from huggingface_hub.errors import HFValidationError
 
     try:
         snapshot_download(
@@ -68,7 +69,7 @@ def sync(force: bool = False) -> bool:
             local_dir=PRECOMPUTE_DIR,
             allow_patterns=SYNC_PATTERNS,
         )
-    except (HfHubHTTPError, OSError) as exc:
+    except (httpx2.HTTPError, HFValidationError, OSError) as exc:
         _log.warning("precomputed sync from %s failed: %s", PRECOMPUTE_HF_REPO, exc)
         return False
     return True

@@ -70,7 +70,13 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     from utils import hub_sync
 
-    hub_sync.sync(force=True)  # the published manifest is the merge base
+    # The published manifest is the merge base: without it every mirrored copy
+    # looks new and upload would prune frames the failed read left out.
+    if hub_sync.PRECOMPUTE_HF_REPO and not hub_sync.sync(force=True):
+        _log.error(
+            "could not mirror %s; refusing to publish", hub_sync.PRECOMPUTE_HF_REPO
+        )
+        return 1
     hub_sync.freeze()
     upload = (
         (lambda: hub_sync.upload(os.environ["HF_TOKEN"])) if args.upload_hf else None

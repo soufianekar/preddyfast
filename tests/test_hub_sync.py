@@ -15,7 +15,7 @@ def _hub(tmp_path, monkeypatch):
     fake = types.ModuleType("huggingface_hub")
     fake.snapshot_download = lambda **kw: calls.append(kw)
     errors = types.ModuleType("huggingface_hub.errors")
-    errors.HfHubHTTPError = type("HfHubHTTPError", (Exception,), {})
+    errors.HFValidationError = type("HFValidationError", (ValueError,), {})
     monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
     monkeypatch.setitem(sys.modules, "huggingface_hub.errors", errors)
     monkeypatch.setattr(hub_sync, "PRECOMPUTE_HF_REPO", "someone/preddyfast-data")
@@ -122,3 +122,30 @@ def test_load_aggregates_mirrors_first(monkeypatch, tmp_path):
     monkeypatch.setattr(hub_sync, "sync", lambda force=False: calls.append(force) or False)
     monkeypatch.setattr(scorecard, "PRECOMPUTE_DIR", str(tmp_path))
     assert scorecard.load_aggregates() is None and calls == [False]
+
+
+def _failing_sync(monkeypatch, tmp_path, exc):
+    import huggingface_hub
+
+    monkeypatch.setattr(hub_sync, "PRECOMPUTE_HF_REPO", "me/data")
+    monkeypatch.setattr(hub_sync, "PRECOMPUTE_DIR", str(tmp_path))
+    monkeypatch.setattr(hub_sync, "_frozen", False)
+
+    def boom(**kwargs):
+        raise exc
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", boom)
+
+
+def test_sync_survives_a_transport_error(monkeypatch, tmp_path):
+    import httpx2
+
+    _failing_sync(monkeypatch, tmp_path, httpx2.ConnectError("reset"))
+    assert hub_sync.sync(force=True) is False
+
+
+def test_sync_survives_a_malformed_repo_id(monkeypatch, tmp_path):
+    from huggingface_hub.errors import HFValidationError
+
+    _failing_sync(monkeypatch, tmp_path, HFValidationError("bad repo id"))
+    assert hub_sync.sync(force=True) is False

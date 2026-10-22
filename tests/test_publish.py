@@ -54,3 +54,15 @@ def test_publish_does_not_let_a_mirrored_copy_overwrite_new_output(
     copied = publish.publish([maps_part, scorecard_part], out, upload=None)
     assert (out / "maps/gallery.json").read_bytes() == b"new"
     assert copied == 1
+
+
+def test_main_refuses_without_its_merge_base(tmp_path, monkeypatch):
+    from utils import hub_sync
+
+    part = _part(tmp_path / "a", "ifs_ens", "2026-10-22T00:00")
+    called = []
+    monkeypatch.setattr(hub_sync, "PRECOMPUTE_HF_REPO", "me/data")
+    monkeypatch.setattr(hub_sync, "sync", lambda force=False: False)
+    monkeypatch.setattr(publish, "publish", lambda *a, **k: called.append(a) or 0)
+    assert publish.main([str(part)]) != 0
+    assert called == []
