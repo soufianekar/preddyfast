@@ -137,9 +137,23 @@ run writes nothing new (the workflow's `backfill` input does the same).
 
 ## Data and credits
 
-Open-Meteo (CC BY 4.0) · dynamical.org archives of ECMWF IFS ENS / AIFS and NOAA
-GEFS / GFS · Copernicus Climate Change Service ERA5 (contains modified Copernicus
-information) · NOAA GHCNh · NASA GPM IMERG · Natural Earth · IPCC AR6 reference
-regions · OpenStreetMap contributors / Nominatim.
+Open-Meteo (CC BY 4.0) · dynamical.org archives of ECMWF IFS ENS / AIFS
+(ECMWF, CC BY 4.0) and NOAA GEFS / GFS · Copernicus Climate Change Service ERA5
+(contains modified Copernicus Climate Change Service information 2026) · NOAA
+GHCNh · NASA GPM IMERG · Natural Earth · IPCC AR6 reference regions ·
+OpenStreetMap contributors / Nominatim.
+
+### Bundled data
+
+These files keep their own licences; the Apache License below covers the code.
+
+| File | Source | Licence |
+|---|---|---|
+| `src/data/ar6_regions.json` | IPCC WGI Atlas reference regions v4 (Iturbide et al., 2020, *Earth Syst. Sci. Data* 12, 2959–2970) | CC BY 4.0 |
+| `src/data/scorecard_orography.json` | ERA5 invariant orography, Copernicus Climate Change Service | Copernicus licence (contains modified Copernicus Climate Change Service information 2026) |
+| `src/data/natural_earth_lines.npz` | Natural Earth coastlines and borders | Public domain |
+| `tests/data/ghcnh_*` | NOAA GHCNh samples | US Government work, public domain |
+
+## Licence
 
 Apache License 2.0 — see [LICENSE](LICENSE).
