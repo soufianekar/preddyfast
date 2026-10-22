@@ -4,14 +4,19 @@
 # when the `upload` box is ticked. To schedule it, move the `schedule:` block
 # below under `on:`. Repository settings needed:
 #   secrets   HF_TOKEN (write access to the Dataset), CDS_KEY (maps gallery)
-#   variables PRECOMPUTE_HF_REPO ("user/preddyfast-data")
+#   variables PRECOMPUTE_HF_REPO ("user/preddyfast-data"),
+#             PRECOMPUTE_HF_STATE_REPO ("user/preddyfast-state", private)
+#   HF_TOKEN needs read + write on both Datasets.
 #
 # Each run first mirrors what the Dataset already holds, so a store whose
 # newest run is already published or a gallery month already drawn is
-# skipped. The point, CDS and observation caches and the scorecard's working
-# state (.scorecard: per-init rows, frozen network) are kept between runs by
-# actions/cache, so only new runs are read from the archives and an init is
-# rescored, as observations arrive, from extracts already on disk.
+# skipped. The scorecard's working state (.scorecard: per-init rows, frozen
+# network, window) lives in the private state Dataset: scripts/state.py pulls
+# it before the job and pushes what changed after, even when the job stopped
+# part-way; push refuses unless the pull succeeded. The point, CDS and
+# observation caches are rebuildable downloads and stay in actions/cache, so
+# only new runs are read from the archives and an init is rescored, as
+# observations arrive, from extracts already on disk.
 #
 # The scorecard fills its 14-day window newest init first, as much as 60 min
 # allows per run. To fill it from scratch, dispatch with `backfill` ticked:
@@ -59,6 +64,7 @@ jobs:
     timeout-minutes: ${{ inputs.backfill && 350 || 120 }}
     env:
       PRECOMPUTE_HF_REPO: ${{ vars.PRECOMPUTE_HF_REPO }}
+      PRECOMPUTE_HF_STATE_REPO: ${{ vars.PRECOMPUTE_HF_STATE_REPO }}
       CDS_KEY: ${{ secrets.CDS_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       POINT_CACHE_DIR: .point-cache
@@ -79,9 +85,12 @@ jobs:
             .point-cache
             .cds-cache
             .obs-cache
-            .scorecard
           key: archive-${{ github.run_id }}
           restore-keys: archive-
+      - name: Pull scorecard state
+        id: pull
+        if: ${{ github.event_name == 'schedule' || inputs.scorecard || inputs.backfill }}
+        run: python scripts/state.py pull
       - name: Precompute
         # A backfill is the scorecard only: animations and maps would eat the
         # 300 min it is given.
@@ -93,6 +102,9 @@ jobs:
           ${{ inputs.backfill && '--backfill --max-minutes 300' || '--max-minutes 60' }}
           ${{ (github.event_name == 'schedule' || (inputs.maps && !inputs.backfill)) && '--maps' || '' }}
           ${{ (github.event_name == 'schedule' || inputs.upload) && '--upload-hf' || '' }}
+      - name: Push scorecard state
+        if: ${{ always() && steps.pull.outcome == 'success' }}
+        run: python scripts/state.py push
       - uses: actions/cache/save@v4
         if: always()
         with:
@@ -100,5 +112,4 @@ jobs:
             .point-cache
             .cds-cache
             .obs-cache
-            .scorecard
           key: archive-${{ github.run_id }}
