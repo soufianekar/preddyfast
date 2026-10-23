@@ -352,6 +352,13 @@ body {
 
 /* ---- Maps ------------------------------------------------------------------ */
 
+/* Leaflet's panes carry z-indexes of 200-1000 into the page's stacking order,
+   above Mantine's dropdowns (300): the Area list opened behind the map. An
+   isolated container keeps every pane inside the map. */
+.leaflet-container {
+  isolation: isolate;
+}
+
 /* Grey basemap: OSM tiles desaturated, on the tile layer only, so drawn
    selections, outlines and markers keep their colour. In the dark theme the
    tiles are inverted to a night map instead of a bright square. */
