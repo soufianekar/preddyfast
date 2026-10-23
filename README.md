@@ -72,7 +72,7 @@ them. Each of these is enforced in code and covered by tests (`pytest -q`).
 |---|---|
 | App | Hugging Face Spaces (Docker, 2 vCPU, 16 GB), Dash under gunicorn |
 | Precomputed products | A public Hugging Face Dataset: preset animations, the maps gallery, the scorecard's aggregates (`eval/scorecard/aggregates.parquet`) |
-| Scheduled job | GitHub Actions running `scripts/precompute.py` after the 00/12 UTC runs |
+| Scheduled job | GitHub Actions: parallel jobs running `scripts/precompute.py` (one per model group, scorecard, maps) after the 00/12 UTC runs, then one publish job |
 | Data | Open-Meteo (free tier), dynamical.org Icechunk stores (anonymous AWS Open Data), Copernicus CDS (job only), NOAA GHCNh, NASA IMERG |
 
 A public site on free tiers needs guards. They are all in

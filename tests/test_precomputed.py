@@ -219,3 +219,44 @@ def test_anything_the_preset_does_not_hold_reads_the_archive(_dir, monkeypatch, 
     args.update(change)
     assert pc.fields_covering(args["bounds"], args["variable"], args["init"], args["step"], args["horizon"],
                               args["accum"], args["statistic"], args["store"]) is None
+
+
+def _m(**stores):
+    return {
+        "stores": {
+            s: {"init": i, "products": {f"r/v/{s}": {"frames": []}}}
+            for s, i in stores.items()
+        }
+    }
+
+
+def test_merge_part_replaces_its_stores():
+    out = pc.merge_manifest(
+        _m(ifs_ens="2026-10-21T00:00"), _m(ifs_ens="2026-10-22T00:00")
+    )
+    assert out["stores"]["ifs_ens"]["init"] == "2026-10-22T00:00"
+
+
+def test_merge_keeps_stores_missing_from_part():
+    out = pc.merge_manifest(
+        _m(ifs_ens="2026-10-21T00:00", gefs="2026-10-21T00:00"),
+        _m(gefs="2026-10-22T00:00"),
+    )
+    assert out["stores"]["ifs_ens"]["init"] == "2026-10-21T00:00"
+
+
+def test_merge_ignores_older_init():
+    out = pc.merge_manifest(_m(gefs="2026-10-22T00:00"), _m(gefs="2026-10-21T00:00"))
+    assert out["stores"]["gefs"]["init"] == "2026-10-22T00:00"
+
+
+def test_merge_newer_init_wins():
+    base = pc.merge_manifest({"stores": {}}, _m(aifs_ens="2026-10-21T00:00"))
+    out = pc.merge_manifest(base, _m(aifs_ens="2026-10-21T12:00"))
+    assert out["stores"]["aifs_ens"]["init"] == "2026-10-21T12:00"
+
+
+def test_merge_does_not_mutate_inputs():
+    base, part = _m(gefs="2026-10-21T00:00"), _m(gefs="2026-10-22T00:00")
+    pc.merge_manifest(base, part)
+    assert base["stores"]["gefs"]["init"] == "2026-10-21T00:00"

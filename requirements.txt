@@ -14,7 +14,7 @@ flask-caching>=2.3
 gunicorn>=22.0
 # Public site: per-client callback limit; precomputed products on an HF Dataset.
 flask-limiter>=3.5
-huggingface_hub>=0.30
+huggingface_hub>=2.0
 # Gridded ensemble backend (regional page only). Adds ~1 GB to the image.
 icechunk>=2.0
 xarray>=2025.1
