@@ -110,7 +110,7 @@ def test_refresh_renders_each_preset_once_per_new_run(monkeypatch, _dir):
     calls = []
 
     def fake_animation(area_key, variable, init_time, step, horizon, accum, statistic, pct, pct_range,
-                       projection, extent, palette, stores, theme):
+                       projection, extent, palette, stores, theme, budget_mb=None):
         calls.append((area_key, variable, statistic, accum, stores, theme, palette, step, horizon))
         return _animation()
 
@@ -132,7 +132,7 @@ def test_refresh_renders_each_preset_once_per_new_run(monkeypatch, _dir):
 
 def test_deterministic_store_draws_its_field_only(monkeypatch, _dir):
     stats = []
-    monkeypatch.setattr(pc, "forecast_animation", lambda *a: stats.append(a[6]) or _animation())
+    monkeypatch.setattr(pc, "forecast_animation", lambda *a, **k: stats.append(a[6]) or _animation())
     monkeypatch.setattr(pc, "current_init", lambda stores, run: INIT)
     monkeypatch.setattr(pc, "store_variables", lambda store: ["precipitation_surface"])
     monkeypatch.setattr(pc, "PRECOMPUTE_REGIONS", ("ecmwf_europe",))
@@ -160,7 +160,7 @@ def test_upload_sends_frames_then_the_manifest_last(_dir):
 
 def test_control_renders_right_after_its_source_so_the_cube_is_shared(monkeypatch, _dir):
     order = []
-    monkeypatch.setattr(pc, "forecast_animation", lambda *a: order.append((a[0], a[1], a[12][0])) or _animation())
+    monkeypatch.setattr(pc, "forecast_animation", lambda *a, **k: order.append((a[0], a[1], a[12][0])) or _animation())
     monkeypatch.setattr(pc, "current_init", lambda stores, run: INIT)
     monkeypatch.setattr(pc, "store_variables", lambda store: ["temperature_2m", "pressure_reduced_to_mean_sea_level"])
     monkeypatch.setattr(pc, "PRECOMPUTE_REGIONS", ("ecmwf_europe", "ecmwf_n_atlantic"))
@@ -260,3 +260,15 @@ def test_merge_does_not_mutate_inputs():
     base, part = _m(gefs="2026-10-21T00:00"), _m(gefs="2026-10-22T00:00")
     pc.merge_manifest(base, part)
     assert base["stores"]["gefs"]["init"] == "2026-10-21T00:00"
+
+
+def test_refresh_reads_under_the_batch_budget_not_the_interactive_one(monkeypatch, _dir):
+    budgets = []
+    monkeypatch.setattr(pc, "forecast_animation", lambda *a, **k: budgets.append(k.get("budget_mb")) or _animation())
+    monkeypatch.setattr(pc, "current_init", lambda stores, run: INIT)
+    monkeypatch.setattr(pc, "store_variables", lambda store: ["temperature_2m"])
+    monkeypatch.setattr(pc, "PRECOMPUTE_REGIONS", ("ecmwf_n_atlantic",))
+    monkeypatch.setattr(pc, "PRECOMPUTE_VARIABLES", {"temperature_2m": None})
+    pc.refresh_store("ifs_ens", pc.load_manifest())
+    # IFS ENS over the N Atlantic to T+360 is ~960 MB; the interactive limit is 400.
+    assert budgets == [pc.PRECOMPUTE_READ_BUDGET_MB] and pc.PRECOMPUTE_READ_BUDGET_MB >= 1000

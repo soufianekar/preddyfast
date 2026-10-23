@@ -45,3 +45,19 @@ def test_deterministic_panel_shows_the_field_and_says_so(monkeypatch):
                                    "auto", "data", "default", ("ifs_ens", "gfs"))
     assert [p["store"] for p in spread["panels"]] == ["ifs_ens"]
     assert any("spread" in e for e in spread["errors"])
+
+
+def test_a_batch_budget_replaces_the_interactive_one(monkeypatch):
+    seen = {}
+
+    def budget(stores, bounds, **kwargs):
+        seen.update(kwargs)
+        raise GridDataError("over budget")
+
+    monkeypatch.setattr(mp, "check_read_budget", budget)
+    try:
+        mp.forecast_animation("box:45,50,5,10", "temperature_2m", None, 24, 72, None, "mean", 90.0, (10, 90),
+                              "auto", "data", "default", ("ifs_ens",), budget_mb=1100.0)
+    except GridDataError:
+        pass
+    assert seen["budget_mb"] == 1100.0

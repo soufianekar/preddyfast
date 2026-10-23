@@ -44,6 +44,7 @@ from utils.settings import (
     GRID_STORES,
     PRECOMPUTE_DIR,
     PRECOMPUTE_HORIZON_HOURS,
+    PRECOMPUTE_READ_BUDGET_MB,
     PRECOMPUTE_REGIONS,
     PRECOMPUTE_STATISTICS,
     PRECOMPUTE_STEP_HOURS,
@@ -373,6 +374,7 @@ def refresh(stores: tuple[str, ...], manifest: dict, force: bool = False) -> int
                             region, variable, f"{init:%Y-%m-%dT%H:%M}", PRECOMPUTE_STEP_HOURS,
                             PRECOMPUTE_HORIZON_HOURS, accum, statistic, 90.0, (10.0, 90.0),
                             "auto", "data", "default", (store,), "dark",
+                            budget_mb=PRECOMPUTE_READ_BUDGET_MB,
                         )
                     except GridDataError as exc:
                         _log.warning("%s %s %s %s: %s", store, region, variable, statistic, exc)
