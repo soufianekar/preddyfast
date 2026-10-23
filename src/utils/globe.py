@@ -277,9 +277,16 @@ def refresh(
     failures = failures if failures is not None else []
     first = GLOBE_LAYERS[next(iter(GLOBE_LAYERS))]["variable"]
     try:
+        # Before the completeness probe, which itself reads a whole-globe field.
+        check_read_budget(
+            (GLOBE_STORE,),
+            GLOBAL_BOUNDS,
+            horizon_hours=GLOBE_HORIZON_HOURS,
+            budget_mb=GLOBE_READ_BUDGET_MB,
+        )
         ds = _open_global(GLOBE_STORE)
         init, _ = _complete_run(ds, first, GLOBAL_BOUNDS, None, GLOBE_STORE)
-    except GridDataError as exc:
+    except (GridDataError, OSError, RuntimeError) as exc:
         failures.append(f"globe: {exc}")
         return 0
     if not force and manifest.get("init_time") == _iso(init):

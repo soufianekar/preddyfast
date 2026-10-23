@@ -131,3 +131,29 @@ def test_the_budget_is_checked_before_reading(store, monkeypatch, tmp_path):
     assert failures and "over budget" in failures[0]
     assert not (tmp_path / "globe" / "manifest.json").exists()
     assert not (tmp_path / "globe" / "aifs_single").exists()
+
+
+def test_the_budget_refuses_before_the_run_probe_reads(store, monkeypatch):
+    def refuse(*a, **k):
+        raise GridDataError("over budget")
+
+    def never(*a, **k):
+        raise AssertionError("opened or probed")
+
+    monkeypatch.setattr(globe, "check_read_budget", refuse)
+    monkeypatch.setattr(globe, "_open_global", never)
+    monkeypatch.setattr(globe, "_complete_run", never)
+    failures: list[str] = []
+    assert globe.refresh({}, failures=failures) == 0
+    assert failures and "over budget" in failures[0]
+
+
+@pytest.mark.parametrize("exc", [OSError("net down"), RuntimeError("icechunk")])
+def test_a_network_error_in_the_run_probe_is_recorded(store, monkeypatch, exc):
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(globe, "_complete_run", boom)
+    failures: list[str] = []
+    assert globe.refresh({}, failures=failures) == 0
+    assert failures and str(exc) in failures[0]
