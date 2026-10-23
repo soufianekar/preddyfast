@@ -135,14 +135,18 @@ async function canvasUrl(canvas) {
   return URL.createObjectURL(blob);
 }
 
-// Colour the decoded values with the layer's palette into the image source.
-async function drawShaded(values, layer) {
+// Colour the decoded values with the layer's palette; a blob URL of the PNG.
+async function shadedUrl(values, layer) {
   const { nx } = manifest.grid;
   const rgba = colourise(values, manifest.grid, palettes[layer.palette], OUT_HEIGHT);
   imageCanvas.width = nx;
   imageCanvas.height = OUT_HEIGHT;
   imageCanvas.getContext("2d").putImageData(new ImageData(rgba, nx, OUT_HEIGHT), 0, 0);
-  const url = await canvasUrl(imageCanvas);
+  return canvasUrl(imageCanvas);
+}
+
+// Synchronous, so it runs only for the newest render (see renderFrame).
+function showShaded(url) {
   const source = map.getSource("shaded");
   if (source) {
     source.updateImage({ url });
@@ -171,8 +175,20 @@ function hideShaded() {
 
 let renderSeq = 0;
 
+// Never rejects: a failure keeps the previous frame and says so.
 async function render() {
   const seq = ++renderSeq;
+  try {
+    await renderFrame(seq);
+  } catch (err) {
+    console.warn("globe frame", err);
+    if (seq === renderSeq) ui.setStatus("frame unavailable");
+  }
+}
+
+// All or nothing: the shaded field and the isobars are applied together, after
+// every await, so what is drawn always matches the legend and provenance.
+async function renderFrame(seq) {
   const frames = sliderFrames();
   if (!frames.length) return;
   const index = indexFor(frames, state.lead);
@@ -181,35 +197,33 @@ async function render() {
   ui.setLeadSlider(frames, index);
   writeUrl();
 
+  const layer = manifest.layers[state.layer];
   const { shaded, iso, isoFrame } = loadFrames(frame);
   const [s, i] = await Promise.allSettled([shaded, iso]);
   if (seq !== renderSeq) return;
-
-  let failed = false;
-  const layer = manifest.layers[state.layer];
-  if (!shaded) {
-    hideShaded();
-    Object.assign(shown, { layer: null, values: null, frame });
-  } else if (s.status === "fulfilled") {
-    await drawShaded(s.value, layer);
-    if (seq !== renderSeq) return;
-    Object.assign(shown, { layer: state.layer, values: s.value, frame });
-  } else {
-    failed = true;
+  const shadedFailed = shaded && s.status !== "fulfilled";
+  const isoFailed = state.isobars && !(iso && i.status === "fulfilled");
+  if (shadedFailed || isoFailed) {
+    ui.setStatus("frame unavailable");
+    return;
   }
 
-  const isoSource = map.getSource("isobars");
-  if (!state.isobars) {
-    isoSource.setData(EMPTY);
-    shown.isoFrame = null;
-  } else if (iso && i.status === "fulfilled") {
-    isoSource.setData(i.value);
-    shown.isoFrame = isoFrame;
-  } else {
-    failed = true;
+  const url = shaded ? await shadedUrl(s.value, layer) : null;
+  if (seq !== renderSeq) {
+    if (url) URL.revokeObjectURL(url);
+    return;
   }
 
-  ui.setStatus(failed ? "frame unavailable" : "");
+  if (url) showShaded(url);
+  else hideShaded();
+  map.getSource("isobars").setData(iso ? i.value : EMPTY);
+  Object.assign(shown, {
+    layer: shaded ? state.layer : null,
+    values: shaded ? s.value : null,
+    frame,
+    isoFrame: iso ? isoFrame : null,
+  });
+  ui.setStatus("");
   refreshText();
 }
 
@@ -264,6 +278,10 @@ async function tick() {
   if (!state.playing) return;
   const started = performance.now();
   const frames = sliderFrames();
+  if (!frames.length) {
+    stopPlaying();
+    return;
+  }
   const next = (indexFor(frames, state.lead) + 1) % frames.length;
   state.lead = frames[next].lead_hours;
   await render();
@@ -272,15 +290,22 @@ async function tick() {
   timer = setTimeout(tick, Math.max(0, FRAME_MS - (performance.now() - started)));
 }
 
-function togglePlay() {
-  state.playing = !state.playing;
-  ui.setPlaying(state.playing);
+function stopPlaying() {
+  state.playing = false;
+  ui.setPlaying(false);
   clearTimeout(timer);
-  if (state.playing) {
-    const frames = sliderFrames();
-    prefetch(frames[(indexFor(frames, state.lead) + 1) % frames.length]);
-    timer = setTimeout(tick, FRAME_MS);
+}
+
+function togglePlay() {
+  const frames = sliderFrames();
+  if (state.playing || !frames.length) {
+    stopPlaying();
+    return;
   }
+  state.playing = true;
+  ui.setPlaying(true);
+  prefetch(frames[(indexFor(frames, state.lead) + 1) % frames.length]);
+  timer = setTimeout(tick, FRAME_MS);
 }
 
 // ---- URL query: ?layer=t2m&lead=72&isobars=1 ------------------------------------
