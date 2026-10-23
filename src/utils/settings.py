@@ -1830,6 +1830,34 @@ PRECOMPUTE_HORIZON_HOURS: int = 240
 # READ_BUDGET_MB would refuse every ensemble): IFS ENS over Europe is ~850 MB,
 # GEFS ~650 MB; 1100 MB still stops a mistyped region.
 PRECOMPUTE_READ_BUDGET_MB: float = 1100.0
+
+# Global fields for the static globe page (utils/globe.py): AIFS Single at
+# 0.5° (every second 0.25° cell, both poles kept), 6-hourly to T+240. Labels,
+# units and palettes come from GRID_VARIABLES / MAP_PALETTES; only the 16-bit
+# texture range (offset, scale) lives here. "tp6" is a 6 h total from the
+# store's mean rate; "msl" is drawn as isobars at the palette's interval.
+GLOBE_STORE: str = "aifs_single"
+GLOBE_STRIDE: int = 2
+GLOBE_STEP_HOURS: int = 6
+GLOBE_HORIZON_HOURS: int = 240
+# Per variable, uncompressed (read_estimate's unit): one 0.25° global layer.
+GLOBE_READ_BUDGET_MB: float = 400.0
+GLOBE_LAYERS: dict[str, dict] = {
+    "t2m": {
+        "variable": "temperature_2m",
+        "kind": "shaded",
+        "offset": -80.0,
+        "scale": 0.002,
+    },
+    "tp6": {
+        "variable": "precipitation_surface",
+        "kind": "shaded",
+        "accum_hours": 6,
+        "offset": 0.0,
+        "scale": 0.005,
+    },
+    "msl": {"variable": "pressure_reduced_to_mean_sea_level", "kind": "isobars"},
+}
 OBS_TIMEOUT_S: float = 30.0
 OBS_STATION_LIST_MAX_AGE_H: float = 24 * 7
 # The current year's file grows through the day; past years never change.

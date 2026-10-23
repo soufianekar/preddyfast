@@ -2007,6 +2007,44 @@ def _complete_run(ds, variable: str, bounds: tuple, init_time: str | None, store
     )
 
 
+def window_totals(
+    values: np.ndarray, lead_h: np.ndarray, accum_hours: int, lead_axis: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Totals over a trailing window from a mean rate per step.
+
+    Each value is the mean rate over the step ending at its lead, so the amount
+    per step is rate x step length and the total over `(L - P, L]` is
+    `cum(L) - cum(L - P)`. A lead whose window start is not itself a lead (or is
+    before T+0) cannot carry a complete window and is dropped, never reported
+    short.
+
+    Returns
+    -------
+    tuple
+        `(totals, kept_lead_indices)`; `totals` has the lead axis cut to the
+        kept leads. Raises `GridDataError` when no lead has a complete window.
+    """
+    v = np.moveaxis(values, lead_axis, 0)
+    # Mean rate over the preceding step x step length = amount per step.
+    duration = np.diff(lead_h, prepend=0.0).astype(np.float32)
+    per_step = np.nan_to_num(v) * duration.reshape((-1,) + (1,) * (v.ndim - 1))
+    cum = np.cumsum(per_step, axis=0)
+    index = {h: i for i, h in enumerate(lead_h)}
+    keep, totals = [], []
+    for i, h in enumerate(lead_h):
+        start = h - accum_hours
+        if start < 0 or (start > 0 and start not in index):
+            continue
+        base = cum[index[start]] if start > 0 else 0.0
+        keep.append(i)
+        totals.append(cum[i] - base)
+    if not keep:
+        raise GridDataError(
+            f"No lead in this run carries a complete {accum_hours} h total."
+        )
+    return np.moveaxis(np.stack(totals, axis=0), 0, lead_axis), np.asarray(keep)
+
+
 @functools.lru_cache(maxsize=3)
 def frame_cube(
     area_key: str,
@@ -2087,21 +2125,7 @@ def frame_cube(
     if accum_hours:
         if not meta_var.get("is_accumulated"):
             raise GridDataError(f"'{variable}' cannot be totalled over a window.")
-        # Mean rate over the preceding step x step length = amount per step.
-        duration = np.diff(lead_h, prepend=0.0).astype(np.float32)
-        cum = np.cumsum(np.nan_to_num(values) * duration[None, :, None, None], axis=1)
-        index = {h: i for i, h in enumerate(lead_h)}
-        keep, totals = [], []
-        for i, h in enumerate(lead_h):
-            start = h - accum_hours
-            if start < 0 or (start > 0 and start not in index):
-                continue
-            base = cum[:, index[start]] if start > 0 else 0.0
-            keep.append(i)
-            totals.append(cum[:, i] - base)
-        if not keep:
-            raise GridDataError(f"No lead in this run carries a complete {accum_hours} h total.")
-        values = np.stack(totals, axis=1)
+        values, keep = window_totals(values, lead_h, accum_hours, lead_axis=1)
         lead_h = lead_h[keep]
         valid_all = np.asarray(da["valid_time"].values)[keep]
         unit = meta_var.get("accum_unit", unit)
