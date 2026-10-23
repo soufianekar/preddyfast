@@ -18,6 +18,9 @@ huggingface_hub>=2.0
 # Gridded ensemble backend (regional page only). Adds ~1 GB to the image.
 icechunk>=2.0
 xarray>=2025.1
+# xarray reads the Zarr stores chunked only with dask; without it a fresh
+# install (CI, the Space) decodes unchunked and runs a 16 GB runner out of memory.
+dask>=2025.1
 zarr>=3.0
 # Copernicus CDS/ADS backend (maps page only). `cdsapi` speaks to both stores;
 # the NetCDF readers are what xarray needs to open what they return.
