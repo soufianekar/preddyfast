@@ -30,6 +30,10 @@ h5netcdf>=1.3
 # Static gallery on the maps page: server-rendered PNGs. Coastlines come from
 # the bundled Natural Earth file, so cartopy never downloads shapefiles.
 matplotlib>=3.8
+# Imported directly now (utils/globe.py), not only through matplotlib.
+pillow>=10
+# Imported directly now (utils/globe.py), not only through matplotlib.
+contourpy>=1.2
 cartopy>=0.23
 # Point verification scores (fair CRPS, ETS, HSS, Brier) for the station scorecard.
 scores>=2.7
