@@ -66,3 +66,18 @@ def test_main_refuses_without_its_merge_base(tmp_path, monkeypatch):
     monkeypatch.setattr(publish, "publish", lambda *a, **k: called.append(a) or 0)
     assert publish.main([str(part)]) != 0
     assert called == []
+
+
+def test_publish_takes_the_globe_part_manifest_over_stale_mirrors(
+    tmp_path, monkeypatch
+):
+    out = tmp_path / "pre"
+    (out / "globe").mkdir(parents=True)
+    (out / "globe/manifest.json").write_text(json.dumps({"init_time": "OLD"}))
+    monkeypatch.setattr(publish.precomputed, "_root", lambda: out)
+    stale, fresh = tmp_path / "a", tmp_path / "globe"
+    for part, init in ((stale, "OLD"), (fresh, "NEW")):
+        (part / "globe").mkdir(parents=True)
+        (part / "globe/manifest.json").write_text(json.dumps({"init_time": init}))
+    publish.publish([stale, fresh], out, upload=None)
+    assert json.loads((out / "globe/manifest.json").read_text())["init_time"] == "NEW"

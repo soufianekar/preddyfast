@@ -91,3 +91,17 @@ def test_month_total_uses_that_months_calendar_length():
     assert monthly_rate_factor("per_month", pd.Timestamp("2024-02-01"))[0] == 29.0
     assert monthly_rate_factor("per_month", pd.Timestamp("2026-02-01"))[0] == 28.0
     assert monthly_rate_factor("per_day", pd.Timestamp("2026-02-01"))[0] == 1.0
+
+
+def test_window_totals_matches_frame_cube():
+    lead_h = np.arange(0.0, 73.0, 6.0)
+    rate = np.random.default_rng(0).random((2, lead_h.size, 3, 4)).astype(np.float32)
+    totals, keep = em.window_totals(rate, lead_h, 24, lead_axis=1)
+    # Hand-built: 6 h steps at a mean rate, 24 h total ending at lead L.
+    assert lead_h[keep][0] == 24.0 and totals.shape[1] == len(keep)
+    i = int(np.flatnonzero(lead_h == 48)[0])
+    expect = rate[:, i - 3 : i + 1].sum(axis=1) * 6.0
+    j = list(lead_h[keep]).index(48.0)
+    np.testing.assert_allclose(totals[:, j], expect, rtol=1e-5)
+    with pytest.raises(em.GridDataError):
+        em.window_totals(rate[:, :3], lead_h[:3], 24, lead_axis=1)
