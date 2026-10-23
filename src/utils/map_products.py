@@ -568,6 +568,7 @@ def forecast_animation(
     stores: tuple[str, ...] = (GRID_STORE_DEFAULT,),
     theme: str = "dark",
     levels: str = "auto",
+    budget_mb: float | None = None,
 ) -> dict:
     """Static map frames of an ensemble statistic, one panel per model.
 
@@ -583,6 +584,8 @@ def forecast_animation(
     dict
         `panels`: `[{store, label}]`; `frames`: `[{lead_hours, valid, srcs}]`
         with one PNG data URI per panel; `caption`; `filename`.
+
+    `budget_mb` replaces the interactive read budget (the preset job's own).
     """
     from utils.precomputed import fields_covering  # precomputed imports this module
 
@@ -598,7 +601,7 @@ def forecast_animation(
     to_read = tuple(s for s in stores if s not in cubes)
     # Frames stop at the horizon, so only its lead chunks are read (GEFS).
     if to_read:
-        check_read_budget(to_read, bounds, horizon_hours=horizon_hours)
+        check_read_budget(to_read, bounds, horizon_hours=horizon_hours, budget_mb=budget_mb)
     # A model that cannot serve this (no such variable, no such run) loses its
     # panel, not the animation: the others still render, and say why.
     errors = []

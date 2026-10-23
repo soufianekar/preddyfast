@@ -1821,6 +1821,10 @@ PRECOMPUTE_VARIABLES: dict[str, int | None] = {
 PRECOMPUTE_STATISTICS: dict[str, tuple[str, ...]] = {"precipitation_surface": ("mean", "range")}
 PRECOMPUTE_STEP_HOURS: int = 24
 PRECOMPUTE_HORIZON_HOURS: int = 360
+# Read budget for one preset in the scheduled job (the interactive
+# READ_BUDGET_MB would refuse every ensemble): IFS ENS over the N Atlantic to
+# T+360 is ~960 MB, GEFS ~760 MB; 1100 MB still stops a mistyped region.
+PRECOMPUTE_READ_BUDGET_MB: float = 1100.0
 OBS_TIMEOUT_S: float = 30.0
 OBS_STATION_LIST_MAX_AGE_H: float = 24 * 7
 # The current year's file grows through the day; past years never change.
