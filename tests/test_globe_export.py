@@ -165,3 +165,29 @@ def test_a_network_error_in_the_run_probe_is_recorded(store, monkeypatch, exc):
     failures: list[str] = []
     assert globe.refresh({}, failures=failures) == 0
     assert failures and str(exc) in failures[0]
+
+
+def test_a_layer_missing_far_leads_fails_the_run_and_keeps_the_manifest(
+    monkeypatch, tmp_path
+):
+    ds = _fake()
+    rate = ds["precipitation_surface"].values
+    rate[1, -10:] = np.nan  # t2m (the probe) complete, precipitation not yet
+    rate[1, 0] = np.nan  # T+0 of a mean rate may legitimately be empty
+    monkeypatch.setattr(globe, "_open_global", lambda s: ds)
+    monkeypatch.setattr(globe, "check_read_budget", lambda *a, **k: None)
+    monkeypatch.setattr(em, "_latest_candidates", lambda s: [NEW, OLD])
+    monkeypatch.setattr(globe, "PRECOMPUTE_DIR", str(tmp_path))
+    old = {"store": "aifs_single", "init_time": "2026-10-23T00:00:00", "layers": {}}
+    globe.save_manifest(old)
+    failures: list[str] = []
+    assert globe.refresh(old, failures=failures) == 0
+    assert globe.load_manifest() == old
+    assert len(failures) == 1 and failures[0].startswith("globe tp6:")
+    assert "precipitation_surface" in failures[0] and "T+186" in failures[0]
+
+
+def test_nan_at_t0_only_is_accepted(store):
+    store["precipitation_surface"].values[1, 0] = np.nan
+    out = globe.read_global("tp6", NEW)
+    assert np.allclose(out["values"], 6.0)

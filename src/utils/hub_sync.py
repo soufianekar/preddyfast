@@ -94,10 +94,10 @@ def referenced_paths(
 def stale_paths(
     files: list[str], manifest: dict, gallery: dict, globe: dict | None = None
 ) -> list[str]:
-    """Images and preset fields on the Dataset that no manifest references.
+    """Images, preset fields and globe frames on the Dataset no manifest references.
 
-    Only `frames/` and `maps/` content is ever pruned — manifests and scores
-    are kept whatever they contain. With an empty animation manifest nothing
+    Only `frames/`, `maps/` and `globe/` content is ever pruned — manifests and
+    scores are kept whatever they contain. With an empty animation manifest nothing
     under `frames/` is touched: that is a failed or partial job, not a
     decision to delete every run. The same holds for `globe/` and a globe
     manifest without layers.

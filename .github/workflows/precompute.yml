@@ -13,7 +13,10 @@
 #               GEFS, AIFS single); a group's failure never stops the others
 #   scorecard   the station scorecard
 #   maps        the ERA5 maps gallery
-#   globe       the global AIFS Single fields for the globe page (opt-in)
+#   globe       the global AIFS Single fields for the globe page (opt-in);
+#               it stays manual even once the schedule is enabled: a
+#               scheduled run has no inputs, so `inputs.globe` is false. Dispatch
+#               with `globe` ticked to export it.
 # Each job writes its products to .precomputed and uploads them as a one-day
 # artifact (a "part"); none uploads to the Dataset. The publish job then
 # downloads every part, merges them with the Dataset's mirror, and uploads

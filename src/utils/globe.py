@@ -146,6 +146,9 @@ def read_global(layer: str, init: pd.Timestamp | None = None) -> dict:
     spec = GLOBE_LAYERS[layer]
     variable = spec["variable"]
     meta = GRID_VARIABLES[variable]
+    window = spec.get("accum_hours")
+    if window and not meta.get("is_accumulated"):
+        raise GridDataError(f"'{variable}' cannot be totalled over a window.")
     check_read_budget(
         (GLOBE_STORE,),
         GLOBAL_BOUNDS,
@@ -160,7 +163,6 @@ def read_global(layer: str, init: pd.Timestamp | None = None) -> dict:
         da = _select_box(ds, variable, pd.Timestamp(init), GLOBAL_BOUNDS)
     da = da.isel(ensemble_member=0)
     all_h = np.asarray(pd.to_timedelta(da["lead_time"].values).total_seconds()) / 3600
-    window = spec.get("accum_hours")
     if window:
         # Window totals need every step up to the horizon, not just the frames.
         pick = all_h <= GLOBE_HORIZON_HOURS
@@ -178,10 +180,17 @@ def read_global(layer: str, init: pd.Timestamp | None = None) -> dict:
         raise GridDataError(f"Failed reading the global field ({exc}).") from exc
     values = raw.astype(np.float32) * meta["scale"] + meta["offset"]
     del raw
+    # The run probe checks one variable only; a layer still being written must
+    # fail the run, not reach window_totals (which treats NaN as 0 mm). T+0 of
+    # a mean rate is legitimately empty.
+    gaps = np.flatnonzero((lead_h > 0) & np.isnan(values).any(axis=(1, 2)))
+    if gaps.size:
+        raise GridDataError(
+            f"{layer}: '{variable}' has no data from T+{int(lead_h[gaps[0]])} h "
+            f"of the {pd.Timestamp(init):%Y-%m-%d %H} UTC run (still being written?)."
+        )
     unit = meta["unit"]
     if window:
-        if not meta.get("is_accumulated"):
-            raise GridDataError(f"'{variable}' cannot be totalled over a window.")
         values, keep = window_totals(values, lead_h, window, lead_axis=0)
         lead_h = lead_h[keep]
         unit = meta.get("accum_unit", unit)
