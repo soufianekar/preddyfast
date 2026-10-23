@@ -60,19 +60,26 @@ function sourceCol(grid, lon) {
   return ((c % grid.nx) + grid.nx) % grid.nx;
 }
 
-// RGBA nx x outHeight, one Mercator row per output row; unshaded = alpha 0.
-export function colourise(values, grid, bands, outHeight) {
+// RGBA outWidth x outHeight for an image spanning exactly -180..180: one Mercator
+// row per output row, and each output column takes the cell nearest its centre
+// longitude (cell 0, centred on -180, straddles the seam: half at each edge).
+// Unshaded = alpha 0.
+export function colourise(values, grid, bands, outHeight, outWidth = 2 * grid.nx) {
   const { nx } = grid;
   const { levels, colors } = bands;
   const rgb = colors.map(parseHex);
   const lats = mercatorRows(outHeight);
-  const out = new Uint8ClampedArray(nx * outHeight * 4);
+  const cols = new Int32Array(outWidth);
+  for (let j = 0; j < outWidth; j++) {
+    cols[j] = sourceCol(grid, -180 + ((j + 0.5) * 360) / outWidth);
+  }
+  const out = new Uint8ClampedArray(outWidth * outHeight * 4);
   for (let r = 0; r < outHeight; r++) {
     const base = sourceRow(grid, lats[r]) * nx;
-    for (let c = 0; c < nx; c++) {
-      const k = bandIndex(values[base + c], levels, rgb.length);
+    for (let j = 0; j < outWidth; j++) {
+      const k = bandIndex(values[base + cols[j]], levels, rgb.length);
       if (k < 0) continue;
-      const o = 4 * (r * nx + c);
+      const o = 4 * (r * outWidth + j);
       out[o] = rgb[k][0];
       out[o + 1] = rgb[k][1];
       out[o + 2] = rgb[k][2];

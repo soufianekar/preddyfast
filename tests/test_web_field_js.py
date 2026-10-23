@@ -98,11 +98,74 @@ def test_sample_at_wraps_longitude_across_the_seam():
 def test_colourise_colours_bands_and_leaves_gaps_clear():
     grid = {"nx": 2, "ny": 2, "lat0": 90.0, "lon0": -180.0, "res_deg": 180.0}
     bands = {"levels": [0, 10], "colors": ["#ff0000", "#00ff00"]}
-    # rows lat 90 and -90; outHeight 2 -> output rows lat ~ +/-85 -> source rows 0, 1
+    # Source rows lat 90 and -90; outHeight 2 -> output rows at lat ~ +/-66.5
+    # (the Mercator midpoints of 0..85.05) -> source rows 0, 1. Output width
+    # 2 * nx = 4, column centres -135, -45, 45, 135 -> source columns 0, 1, 1, 0.
     values = [5.0, 20.0, -3.0, None]
     out = _js("colourise", values, grid, bands, 2)
-    assert len(out) == 2 * 2 * 4
-    assert out[0:4] == [255, 0, 0, 255]  # 5 -> first band
-    assert out[4:8] == [0, 255, 0, 255]  # 20 -> open top
-    assert out[8:12] == [0, 0, 0, 0]  # below lowest
-    assert out[12:16] == [0, 0, 0, 0]  # NaN
+    assert len(out) == 4 * 2 * 4
+    red, green, clear = [255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 0, 0]
+    px = [out[i : i + 4] for i in range(0, len(out), 4)]
+    assert px[:4] == [red, green, green, red]  # 5 -> first band, 20 -> open top
+    assert px[4:] == [clear] * 4  # below lowest, NaN
+
+
+def test_colourise_column_matches_the_click_readout_at_its_centre():
+    """Each output column holds the cell sampleAt finds at the column's centre."""
+    grid = {"nx": 8, "ny": 5, "lat0": 90.0, "lon0": -180.0, "res_deg": 45.0}
+    bands = {
+        "levels": list(range(0, 41, 1)),
+        "colors": [
+            f"#{i * 6:02x}{255 - i * 6:02x}{(i * 37) % 256:02x}" for i in range(40)
+        ],
+    }
+    values = [float(i) for i in range(grid["nx"] * grid["ny"])]
+    out_h = 16
+    out_w = 2 * grid["nx"]
+    out = _js("colourise", values, grid, bands, out_h)
+    assert len(out) == out_w * out_h * 4
+    lats = _js("mercatorRows", out_h)
+    for r in (0, 3, out_h // 2, out_h - 1):
+        for j in range(out_w):
+            lon = -180 + (j + 0.5) * 360 / out_w
+            v = _js("sampleAt", values, grid, lon, lats[r])
+            k = _js("bandIndex", v, bands["levels"], len(bands["colors"]))
+            o = 4 * (r * out_w + j)
+            h = bands["colors"][k]
+            want = [int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16), 255]
+            assert out[o : o + 4] == want, (r, j, lon)
+    # The seam cell: the first and last output columns both hold column 0.
+    assert out[0:4] == out[4 * (out_w - 1) : 4 * out_w]
+
+
+UI = ROOT / "web" / "js" / "ui.js"
+
+
+def _popup(value, bands, lat=10.0):
+    prog = f"""
+    import {{ popupLines }} from "{UI.as_uri()}";
+    const v = {json.dumps(value)};
+    const layer = {{ label: "X", unit: "mm" }};
+    const lines = popupLines(v === null ? NaN : v, layer, {json.dumps(bands)},
+                             {{ lat: {lat}, lng: 5 }});
+    console.log(JSON.stringify(lines[0]));
+    """
+    res = subprocess.run(
+        ["node", "--input-type=module", "-e", prog],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(res.stdout)
+
+
+def test_popup_names_the_bound_outside_the_shaded_range():
+    open_top = {"levels": [0.5, 1, 2], "colors": ["#000000", "#111111", "#222222"]}
+    closed = {"levels": [-48, 0, 56], "colors": ["#000000", "#111111"]}
+    assert _popup(1.5, open_top) == "X: 1.5 mm"
+    assert _popup(0.1, open_top) == "X: < 0.5 mm"
+    assert _popup(9.0, open_top) == "X: 9.0 mm"  # open top: still shaded
+    assert _popup(-60.0, closed) == "X: < -48 mm"
+    assert _popup(70.0, closed) == "X: > 56 mm"
+    assert _popup(None, open_top) == "X: no value"
+    assert _popup(1.5, open_top, lat=88.0) == "X: no value"

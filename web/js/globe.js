@@ -17,7 +17,8 @@ const IMAGE_COORDS = [
 ];
 const OUT_HEIGHT = 720;
 const FRAME_MS = 500;
-const CACHE_MAX = 90;
+// One full layer of frames plus a few: bounds decoded memory on a phone.
+const CACHE_MAX = 48;
 const LAYERS = ["t2m", "tp6", "none"];
 const EMPTY = { type: "FeatureCollection", features: [] };
 
@@ -136,12 +137,14 @@ async function canvasUrl(canvas) {
 }
 
 // Colour the decoded values with the layer's palette; a blob URL of the PNG.
+// Twice the grid's width, so each cell (centred on lon0 + c * res) spans its own
+// half-columns either side of its centre and the image edges sit at +-180.
 async function shadedUrl(values, layer) {
-  const { nx } = manifest.grid;
-  const rgba = colourise(values, manifest.grid, palettes[layer.palette], OUT_HEIGHT);
-  imageCanvas.width = nx;
+  const width = 2 * manifest.grid.nx;
+  const rgba = colourise(values, manifest.grid, palettes[layer.palette], OUT_HEIGHT, width);
+  imageCanvas.width = width;
   imageCanvas.height = OUT_HEIGHT;
-  imageCanvas.getContext("2d").putImageData(new ImageData(rgba, nx, OUT_HEIGHT), 0, 0);
+  imageCanvas.getContext("2d").putImageData(new ImageData(rgba, width, OUT_HEIGHT), 0, 0);
   return canvasUrl(imageCanvas);
 }
 
@@ -337,7 +340,7 @@ function setTheme(name) {
   ui.applyTheme(themes, name);
   if (!mapReady) return;
   const t = themes[name];
-  map.setPaintProperty("background", "background-color", t.night);
+  map.setPaintProperty("background", "background-color", t.panel);
   map.setPaintProperty("coastline", "line-color", t.coast);
   map.setPaintProperty("border", "line-color", t.border);
   map.setPaintProperty("isobars", "line-color", t.ink);
@@ -362,7 +365,10 @@ function buildMap(theme) {
         isobars: { type: "geojson", data: EMPTY },
       },
       layers: [
-        { id: "background", type: "background", paint: { "background-color": t.night } },
+        // The globe's surface; the space around it is the .map container's
+        // --mx-rule (the canvas is transparent off the globe), so the disc's
+        // edge reads in both themes.
+        { id: "background", type: "background", paint: { "background-color": t.panel } },
         {
           id: "coastline",
           type: "line",
@@ -390,6 +396,18 @@ function buildMap(theme) {
   });
 }
 
+function validManifest(m) {
+  const g = m.grid;
+  return Boolean(
+    g &&
+      Number.isInteger(g.nx) &&
+      Number.isInteger(g.ny) &&
+      m.layers &&
+      typeof m.layers === "object" &&
+      Object.keys(m.layers).length,
+  );
+}
+
 async function main() {
   [themes, palettes] = await Promise.all([
     fetchJson("data/themes.json"),
@@ -399,8 +417,18 @@ async function main() {
   ui.applyTheme(themes, theme);
   ui.bindTheme(setTheme);
 
+  // No WebGL makes the constructor throw; an error before "load" means the map
+  // never draws, so it fails the start instead of leaving a blank page.
   map = buildMap(theme);
-  const loaded = new Promise((resolve) => map.once("load", resolve));
+  const loaded = new Promise((resolve, reject) => {
+    const failed = (e) => reject(e.error ?? new Error("the map failed to load"));
+    map.on("error", failed);
+    map.once("load", () => {
+      map.off("error", failed);
+      resolve();
+    });
+  });
+  loaded.catch(() => {}); // awaited below; never an unhandled rejection meanwhile
   const coast = fetchJson("data/coastlines.geojson");
 
   try {
@@ -408,6 +436,9 @@ async function main() {
   } catch (err) {
     console.warn("globe manifest", err);
     manifest = null;
+  }
+  if (manifest && !validManifest(manifest)) {
+    throw new Error("the published manifest is malformed (no grid or layers)");
   }
 
   await loaded;
@@ -449,4 +480,10 @@ async function main() {
   await render();
 }
 
-main().catch((err) => console.error("globe page", err));
+// One catch for every way the page can fail to start (themes or palettes not
+// loaded, no WebGL, a malformed manifest): say so in the panel, never blank.
+main().catch((err) => {
+  console.error("globe page", err);
+  const reason = String(err?.message ?? err).slice(0, 160);
+  ui.showEmpty(`The globe could not start: ${reason}`);
+});

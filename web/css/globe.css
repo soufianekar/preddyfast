@@ -20,9 +20,12 @@ body {
   outline-offset: 2px;
 }
 
+/* Space around the globe: --mx-rule against the globe's --mx-panel surface
+   (contrast ~1.5 dark, ~1.4 light; night on night had none). */
 .map {
   position: fixed;
   inset: 0;
+  background: var(--mx-rule);
 }
 
 /* ---- Control panel ------------------------------------------------------- */

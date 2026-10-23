@@ -159,14 +159,17 @@ function formatLon(lon) {
   return `${Math.abs(w).toFixed(2)}°${w >= 0 ? "E" : "W"}`;
 }
 
-// "no value" where the cell is unshaded (missing, below the lowest level, or
-// poleward of the drawn 85°).
+// "no value" where the cell is missing or poleward of the drawn 85°; a value
+// outside the shaded range reads as a bound ("< 0.5 mm", "> 60 °C").
 export function popupLines(value, layer, bands, lngLat) {
   const where = `${formatLat(lngLat.lat)} ${formatLon(lngLat.lng)}`;
-  const shaded =
-    Math.abs(lngLat.lat) <= 85.0511 &&
-    bandIndex(value, bands.levels, bands.colors.length) >= 0;
-  const what = shaded ? `${value.toFixed(1)} ${layer.unit}` : "no value";
+  const { levels, colors } = bands;
+  let what = "no value";
+  if (Number.isFinite(value) && Math.abs(lngLat.lat) <= 85.0511) {
+    if (bandIndex(value, levels, colors.length) >= 0) what = `${value.toFixed(1)} ${layer.unit}`;
+    else if (value < levels[0]) what = `< ${levels[0]} ${layer.unit}`;
+    else what = `> ${levels[levels.length - 1]} ${layer.unit}`;
+  }
   return [`${layer.label}: ${what}`, where];
 }
 
@@ -206,8 +209,10 @@ export function bindControls({ onLayer, onIsobars, onLead, onPlay }) {
   $("play").addEventListener("click", onPlay);
 }
 
-export function showEmpty() {
+// The empty state, or a reason the page could not start (text only).
+export function showEmpty(text) {
   $("panel-body").hidden = true;
+  if (text) $("empty").textContent = text;
   $("empty").hidden = false;
 }
 
