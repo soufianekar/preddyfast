@@ -1,5 +1,7 @@
 """Global AIFS Single export: stride, windows, run selection, manifest."""
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -102,6 +104,12 @@ def test_refresh_writes_every_frame_and_a_matching_manifest(store, tmp_path):
     assert m["layers"]["msl"]["frames"][0]["path"].endswith("msl/T000.geojson")
     assert m["layers"]["tp6"]["window_hours"] == 6
     assert m["layers"]["msl"]["interval"] == 5.0
+    assert m["layers"]["msl"]["res_deg"] == 1.0
+    raw = (tmp_path / m["layers"]["msl"]["frames"][0]["path"]).read_text()
+    assert ": " not in raw and ", " not in raw
+    for f in json.loads(raw)["features"]:
+        for c in f["geometry"]["coordinates"]:
+            assert list(c) == [round(x, 1) for x in c]
     assert m["grid"] == {
         "res_deg": 0.5,
         "native_res_deg": 0.25,

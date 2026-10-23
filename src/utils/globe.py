@@ -29,6 +29,7 @@ from utils.earthmover_api import (
 from utils.precomputed import _atomic_bytes, _stamp
 from utils.settings import (
     GLOBE_HORIZON_HOURS,
+    GLOBE_ISOBAR_STRIDE,
     GLOBE_LAYERS,
     GLOBE_READ_BUDGET_MB,
     GLOBE_STEP_HOURS,
@@ -80,7 +81,8 @@ def isobars(
 
     A cyclic column (the first column again at ``lon[0] + 360``) is appended
     before contouring, so lines that cross the seam run on to +-180 at the
-    same latitude on both sides instead of stopping a cell short.
+    same latitude on both sides instead of stopping a cell short. Coordinates
+    are rounded to one decimal to keep the files small.
     """
     v = np.asarray(values, dtype=np.float64)
     lon_x = np.append(lon, lon[0] + 360.0)
@@ -97,7 +99,7 @@ def isobars(
         for line in gen.lines(level):
             if len(line) < 2:
                 continue
-            coords = [[round(float(x), 2), round(float(y), 2)] for x, y in line]
+            coords = [[round(float(x), 1), round(float(y), 1)] for x, y in line]
             features.append(
                 {
                     "type": "Feature",
@@ -225,7 +227,10 @@ def _write_layer(layer: str, out: dict, stamp_dir: Path) -> list[dict]:
             rgba = encode16(out["values"][i], spec["offset"], spec["scale"])
             data = png_bytes(rgba)
         else:
-            gj = isobars(out["values"][i], out["lat"], out["lon"], interval)
+            s = GLOBE_ISOBAR_STRIDE
+            gj = isobars(
+                out["values"][i][::s, ::s], out["lat"][::s], out["lon"][::s], interval
+            )
             data = json.dumps(gj, separators=(",", ":")).encode()
         _atomic_bytes(stamp_dir / layer / name, data)
         rel = Path("globe", GLOBE_STORE, stamp_dir.name, layer, name)
@@ -257,6 +262,9 @@ def _layer_entry(layer: str, out: dict, frames: list[dict]) -> dict:
         }
     else:
         entry["interval"] = MAP_PALETTES[meta["palette"]]["isolines"]
+        entry["res_deg"] = (
+            GRID_STORES[GLOBE_STORE]["res_deg"] * GLOBE_STRIDE * GLOBE_ISOBAR_STRIDE
+        )
     return entry | {"frames": frames}
 
 

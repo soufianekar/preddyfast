@@ -63,7 +63,7 @@ def test_isobars_close_across_the_antimeridian():
     assert east and east == west
 
 
-def test_isobar_coordinates_are_rounded():
+def test_isobar_coordinates_have_one_decimal():
     field, lat, lon = _low_on_the_dateline()
     gj = isobars(field, lat, lon, 5.0)
     assert gj["features"]
@@ -71,4 +71,4 @@ def test_isobar_coordinates_are_rounded():
         assert f["geometry"]["type"] == "LineString"
         assert f["properties"]["value"] % 5.0 == 0
         for c in f["geometry"]["coordinates"]:
-            assert list(c) == [round(x, 2) for x in c]
+            assert list(c) == [round(x, 1) for x in c]

@@ -1838,6 +1838,9 @@ PRECOMPUTE_READ_BUDGET_MB: float = 1100.0
 # store's mean rate; "msl" is drawn as isobars at the palette's interval.
 GLOBE_STORE: str = "aifs_single"
 GLOBE_STRIDE: int = 2
+# Isobars are contoured at 1 degree: 0.5 degree lines are ~2.5x larger for no
+# visible gain on a globe.
+GLOBE_ISOBAR_STRIDE: int = 2
 GLOBE_STEP_HOURS: int = 6
 GLOBE_HORIZON_HOURS: int = 240
 # Per variable, uncompressed (read_estimate's unit): one 0.25° global layer.
