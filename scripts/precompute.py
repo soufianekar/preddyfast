@@ -11,6 +11,7 @@ newest finished run, so running it hourly costs a few metadata reads.
     python scripts/precompute.py --no-animations --scorecard --backfill \
         --max-minutes 300
     python scripts/precompute.py --no-animations --maps   # ERA5 maps gallery (needs CDS)
+    python scripts/precompute.py --no-animations --globe   # global AIFS Single fields
     python scripts/precompute.py --upload-hf         # then publish to the HF Dataset
 
 Output goes to PRECOMPUTE_DIR (default .precomputed; the scorecard's published
@@ -93,6 +94,11 @@ def main(argv: list[str] | None = None) -> int:
         help="draw the ERA5 maps gallery (all, or these items)",
     )
     parser.add_argument(
+        "--globe",
+        action="store_true",
+        help="export the global AIFS Single fields for the globe page",
+    )
+    parser.add_argument(
         "--upload", action="store_true", help="copy outputs to R2 afterwards"
     )
     parser.add_argument(
@@ -168,6 +174,13 @@ def main(argv: list[str] | None = None) -> int:
 
             drawn = map_gallery.refresh(force=args.force, keys=args.maps or None)
             _log.info("maps gallery: %d images written", drawn)
+        if args.globe:
+            from utils import globe
+
+            written = globe.refresh(
+                globe.load_manifest(), force=args.force, failures=failures
+            )
+            _log.info("globe: %d files written", written)
         if args.upload:
             # The scorecard aggregates live under PRECOMPUTE_DIR, so the tree
             # carries them.

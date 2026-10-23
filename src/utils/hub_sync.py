@@ -27,6 +27,7 @@ _log = logging.getLogger(__name__)
 SYNC_PATTERNS = [
     "latest.json",
     "maps/gallery.json",
+    "globe/manifest.json",
     "eval/scorecard/aggregates.parquet",
     "frames/**/fields.npz",
 ]
@@ -75,34 +76,44 @@ def sync(force: bool = False) -> bool:
     return True
 
 
-def referenced_paths(manifest: dict, gallery: dict) -> set[str]:
-    """Every file path the two manifests point at."""
+def referenced_paths(
+    manifest: dict, gallery: dict, globe: dict | None = None
+) -> set[str]:
+    """Every file path the manifests point at."""
     paths = {item["path"] for item in gallery.get("items", {}).values()}
     for store in manifest.get("stores", {}).values():
         for product in store.get("products", {}).values():
             paths.update(frame["path"] for frame in product.get("frames", []))
             if product.get("fields"):
                 paths.add(product["fields"])
+    for layer in (globe or {}).get("layers", {}).values():
+        paths.update(frame["path"] for frame in layer.get("frames", []))
     return paths
 
 
-def stale_paths(files: list[str], manifest: dict, gallery: dict) -> list[str]:
+def stale_paths(
+    files: list[str], manifest: dict, gallery: dict, globe: dict | None = None
+) -> list[str]:
     """Images and preset fields on the Dataset that no manifest references.
 
     Only `frames/` and `maps/` content is ever pruned — manifests and scores
     are kept whatever they contain. With an empty animation manifest nothing
     under `frames/` is touched: that is a failed or partial job, not a
-    decision to delete every run.
+    decision to delete every run. The same holds for `globe/` and a globe
+    manifest without layers.
     """
-    keep = referenced_paths(manifest, gallery)
+    keep = referenced_paths(manifest, gallery, globe)
     prune_frames = bool(manifest.get("stores"))
     prune_maps = bool(gallery.get("items"))
+    prune_globe = bool((globe or {}).get("layers"))
     stale = []
     for path in files:
         if path in keep or path.endswith(".json"):
             continue
-        if (prune_frames and path.startswith("frames/")) or (
-            prune_maps and path.startswith("maps/") and path.endswith(".png")
+        if (
+            (prune_frames and path.startswith("frames/"))
+            or (prune_maps and path.startswith("maps/") and path.endswith(".png"))
+            or (prune_globe and path.startswith("globe/"))
         ):
             stale.append(path)
     return sorted(stale)
@@ -138,6 +149,7 @@ def upload(token: str, squash: bool = True) -> int:
         files,
         _read_json(root / "latest.json", {"stores": {}}),
         _read_json(root / "maps" / "gallery.json", {"items": {}}),
+        _read_json(root / "globe" / "manifest.json", {}),
     )
     if stale:
         api.create_commit(

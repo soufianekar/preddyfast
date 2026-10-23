@@ -149,3 +149,24 @@ def test_sync_survives_a_malformed_repo_id(monkeypatch, tmp_path):
 
     _failing_sync(monkeypatch, tmp_path, HFValidationError("bad repo id"))
     assert hub_sync.sync(force=True) is False
+
+
+def test_globe_frames_in_the_manifest_are_kept_and_old_ones_pruned():
+    files = [
+        "globe/aifs_single/2026102300/t2m/T000.png",
+        "globe/aifs_single/2026102212/t2m/T000.png",
+        "globe/manifest.json",
+    ]
+    globe = {"layers": {"t2m": {"frames": [{"path": files[0]}]}}}
+    stale = hub_sync.stale_paths(files, {"stores": {}}, {"items": {}}, globe)
+    assert stale == [files[1]]
+
+
+def test_without_a_globe_manifest_nothing_under_globe_is_pruned():
+    files = ["globe/aifs_single/2026102212/t2m/T000.png"]
+    assert hub_sync.stale_paths(files, {"stores": {"x": {}}}, {"items": {}}, {}) == []
+    assert hub_sync.stale_paths(files, {"stores": {"x": {}}}, {"items": {}}) == []
+
+
+def test_the_globe_manifest_is_mirrored():
+    assert "globe/manifest.json" in hub_sync.SYNC_PATTERNS
