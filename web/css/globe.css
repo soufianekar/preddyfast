@@ -1,0 +1,265 @@
+/* Globe page. Colours only via --mx-* tokens, set from data/themes.json by ui.js. */
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--mx-night);
+  color: var(--mx-ink);
+  font: 14px/1.4 "Barlow Semi Condensed", "Barlow", system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+}
+
+:focus-visible {
+  outline: 2px solid var(--mx-occl);
+  outline-offset: 2px;
+}
+
+.map {
+  position: fixed;
+  inset: 0;
+}
+
+/* ---- Control panel ------------------------------------------------------- */
+
+.panel {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  width: 300px;
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  background: var(--mx-panel);
+  border: 1px solid var(--mx-rule);
+  border-radius: 6px;
+  z-index: 2;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.brand {
+  font-weight: 600;
+  font-size: 18px;
+  letter-spacing: 0.01em;
+}
+
+button {
+  font: inherit;
+  color: var(--mx-ink);
+  background: var(--mx-raise);
+  border: 1px solid var(--mx-rule);
+  border-radius: 4px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--mx-dim);
+}
+
+.group {
+  border: 0;
+  margin: 0 0 10px;
+  padding: 0;
+  min-width: 0;
+}
+
+.group-label {
+  padding: 0;
+  margin-bottom: 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--mx-dim);
+}
+
+.radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+
+.radios label,
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.check {
+  margin-top: 4px;
+}
+
+input[type="radio"],
+input[type="checkbox"],
+input[type="range"] {
+  accent-color: var(--mx-cold);
+}
+
+.lead-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.play {
+  min-width: 56px;
+}
+
+.lead-label {
+  font-weight: 600;
+}
+
+.lead {
+  width: 100%;
+  margin: 0;
+}
+
+/* ---- Legend: equal-width swatches, level labels at the band edges --------- */
+
+.legend-title {
+  font-size: 12px;
+  color: var(--mx-dim);
+  margin-bottom: 3px;
+}
+
+.legend-bar {
+  display: flex;
+  height: 12px;
+  border: 1px solid var(--mx-rule);
+}
+
+.legend-bar span {
+  flex: 1 1 0;
+}
+
+.legend-labels {
+  position: relative;
+  height: 16px;
+  font-size: 11px;
+  color: var(--mx-dim);
+}
+
+.legend-labels span {
+  position: absolute;
+  top: 1px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.legend-labels span.first {
+  transform: none;
+}
+
+.legend-labels span.last {
+  transform: translateX(-100%);
+}
+
+.iso-note,
+.status,
+.empty {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--mx-dim);
+}
+
+.iso-note:empty,
+.status:empty {
+  display: none;
+}
+
+.status {
+  color: var(--mx-warm);
+}
+
+.empty {
+  font-size: 14px;
+  color: var(--mx-ink);
+}
+
+/* ---- Provenance line ----------------------------------------------------- */
+
+.provenance {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 28px;
+  margin: 0;
+  pointer-events: none;
+  font-size: 12px;
+  color: var(--mx-ink);
+  text-shadow: 0 0 3px var(--mx-night), 0 0 3px var(--mx-night);
+  z-index: 1;
+}
+
+/* ---- MapLibre chrome in theme colours ------------------------------------ */
+
+.maplibregl-popup-content {
+  background: var(--mx-panel);
+  color: var(--mx-ink);
+  border: 1px solid var(--mx-rule);
+  padding: 6px 24px 6px 10px;
+  font: inherit;
+}
+
+.maplibregl-popup-tip {
+  display: none;
+}
+
+.maplibregl-popup-close-button {
+  color: var(--mx-dim);
+  background: transparent;
+  border: 0;
+}
+
+.maplibregl-ctrl-attrib.maplibregl-compact,
+.maplibregl-ctrl-attrib {
+  background: var(--mx-panel);
+  color: var(--mx-dim);
+}
+
+.maplibregl-ctrl-attrib a {
+  color: var(--mx-dim);
+}
+
+/* ---- Narrow screens: the panel folds into a bottom sheet ----------------- */
+
+@media (max-width: 40em) {
+  .panel {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    max-height: 46vh;
+    border-radius: 10px 10px 0 0;
+    border-width: 1px 0 0;
+    padding: 10px 16px 12px;
+  }
+
+  .provenance {
+    left: 16px;
+    right: 16px;
+    top: 10px;
+    bottom: auto;
+  }
+
+  .maplibregl-ctrl-bottom-right,
+  .maplibregl-ctrl-bottom-left {
+    bottom: 46vh;
+  }
+}

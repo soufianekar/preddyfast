@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>preddyfast · Globe</title>
+  <meta name="description" content="The newest ECMWF AIFS Single run on a globe: 2 m temperature, 6 h precipitation and mean sea level pressure.">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css"
+        integrity="sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK" crossorigin="anonymous">
+  <link rel="stylesheet" href="css/globe.css">
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js"
+          integrity="sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp" crossorigin="anonymous"></script>
+  <script type="module" src="js/globe.js"></script>
+</head>
+<body>
+  <div id="map" class="map" aria-label="Globe map"></div>
+
+  <aside class="panel" id="panel" aria-label="Globe controls">
+    <header class="panel-head">
+      <span class="brand">preddyfast</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-pressed="false">Light</button>
+    </header>
+
+    <div class="panel-body" id="panel-body" hidden>
+      <fieldset class="group">
+        <legend class="group-label">Layer</legend>
+        <div class="radios" id="layer-radios">
+          <label><input type="radio" name="layer" value="t2m"> 2 m temperature</label>
+          <label><input type="radio" name="layer" value="tp6"> 6 h precipitation</label>
+          <label><input type="radio" name="layer" value="none"> None</label>
+        </div>
+        <label class="check"><input type="checkbox" id="isobars" checked> Isobars</label>
+      </fieldset>
+
+      <div class="group">
+        <div class="lead-row">
+          <button type="button" class="play" id="play" aria-pressed="false">Play</button>
+          <output class="lead-label" id="lead-label" for="lead">T+0 h</output>
+        </div>
+        <input type="range" id="lead" class="lead" min="0" max="0" step="1" value="0"
+               aria-label="Forecast lead">
+      </div>
+
+      <div class="legend" id="legend"></div>
+      <p class="iso-note" id="iso-note"></p>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </div>
+
+    <p class="empty" id="empty" hidden>No globe run published yet</p>
+  </aside>
+
+  <p class="provenance" id="provenance"></p>
+</body>
+</html>
