@@ -175,6 +175,8 @@ def fields_covering(
         if not path.exists():
             continue
         data = _load_fields(str(path), path.stat().st_mtime)
+        if data["leads"].max() < horizon_hours:
+            continue  # the preset stops short of the request
         lat, lon = data["lat"], data["lon"]
         if not (lat.min() <= lat_min and lat_max <= lat.max() and lon.min() <= lon_min and lon_max <= lon.max()):
             continue
@@ -306,6 +308,9 @@ def preset_animation(
         return None
     if product.get("accum_hours") != accum_hours:
         return None
+    # A request past the preset's last lead is drawn live, never cut short.
+    if not product["frames"] or product["frames"][-1]["lead_hours"] < horizon_hours:
+        return None
     frames = [
         {
             "lead_hours": f["lead_hours"],
@@ -338,7 +343,9 @@ def _statistics(store: str, variable: str) -> tuple[str, ...]:
     return PRECOMPUTE_STATISTICS.get(variable, ("mean",))
 
 
-def refresh(stores: tuple[str, ...], manifest: dict, force: bool = False) -> int:
+def refresh(
+    stores: tuple[str, ...], manifest: dict, force: bool = False, failures: list[str] | None = None
+) -> int:
     """Render presets for each store's newest finished run; returns animations written.
 
     Region, then variable, then store: a view (IFS Control) renders straight
@@ -347,12 +354,16 @@ def refresh(stores: tuple[str, ...], manifest: dict, force: bool = False) -> int
     A store whose run is already in the manifest is skipped; a preset a store
     cannot serve (a variable it lacks) is logged and skipped. The manifest is
     saved after each animation, so an interrupted job keeps what it finished.
+    `failures` collects every store with no run and every preset refused, so
+    the job can fail loudly instead of publishing a partial set as a success.
     """
+    failures = [] if failures is None else failures
     todo, held = {}, {}
     for store in stores:
         init = current_init((store,), None)
         if init is None:
             _log.warning("%s: no finished run", store)
+            failures.append(f"{store}: no finished run")
         elif is_current(manifest, store, init) and not force:
             _log.info("%s: %s already precomputed", store, init)
         else:
@@ -378,6 +389,7 @@ def refresh(stores: tuple[str, ...], manifest: dict, force: bool = False) -> int
                         )
                     except GridDataError as exc:
                         _log.warning("%s %s %s %s: %s", store, region, variable, statistic, exc)
+                        failures.append(f"{store} {region} {variable} {statistic}: {exc}")
                         continue
                     entry = write_animation(store, init, region, variable, statistic, animation, accum)
                     # The statistic's fields too: a smaller area inside this

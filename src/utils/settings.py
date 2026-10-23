@@ -1807,7 +1807,9 @@ PRECOMPUTE_URL: str = os.environ.get(
     if PRECOMPUTE_HF_REPO
     else f"{URL_BASE_PATHNAME}precomputed/",
 )
-PRECOMPUTE_REGIONS: tuple[str, ...] = ("ecmwf_europe", "ecmwf_n_atlantic")
+# Europe only: an ensemble preset over the N Atlantic too ran a 16 GB runner
+# out of memory, and Europe is what most requests ask for.
+PRECOMPUTE_REGIONS: tuple[str, ...] = ("ecmwf_europe",)
 PRECOMPUTE_STORES: tuple[str, ...] = ("ifs_ens", "aifs_ens", "gefs", "ifs_control", "aifs_single")
 # variable -> accumulation window (h), None for instantaneous fields
 PRECOMPUTE_VARIABLES: dict[str, int | None] = {
@@ -1820,10 +1822,13 @@ PRECOMPUTE_VARIABLES: dict[str, int | None] = {
 # Ensemble statistics drawn per variable; deterministic models draw their field.
 PRECOMPUTE_STATISTICS: dict[str, tuple[str, ...]] = {"precipitation_surface": ("mean", "range")}
 PRECOMPUTE_STEP_HOURS: int = 24
-PRECOMPUTE_HORIZON_HOURS: int = 360
+# A request past this horizon renders live (`preset_animation`). T+240 draws
+# 5 fewer frames than T+360 but reads the same chunks: IFS and AIFS ENS keep
+# every lead in one chunk, GEFS's ~8-day lead blocks cover both.
+PRECOMPUTE_HORIZON_HOURS: int = 240
 # Read budget for one preset in the scheduled job (the interactive
-# READ_BUDGET_MB would refuse every ensemble): IFS ENS over the N Atlantic to
-# T+360 is ~960 MB, GEFS ~760 MB; 1100 MB still stops a mistyped region.
+# READ_BUDGET_MB would refuse every ensemble): IFS ENS over Europe is ~850 MB,
+# GEFS ~650 MB; 1100 MB still stops a mistyped region.
 PRECOMPUTE_READ_BUDGET_MB: float = 1100.0
 OBS_TIMEOUT_S: float = 30.0
 OBS_STATION_LIST_MAX_AGE_H: float = 24 * 7
