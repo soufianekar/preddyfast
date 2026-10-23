@@ -126,10 +126,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         started = time.time()
+        failures: list[str] = []
         if not (args.no_animations or args.aggregates_only):
             manifest = precomputed.load_manifest()
-            written = precomputed.refresh(stores, manifest, force=args.force)
-            _log.info("%d animations written", written)
+            written = precomputed.refresh(stores, manifest, force=args.force, failures=failures)
+            _log.info("%d animations written, %d not rendered", written, len(failures))
+            for failure in failures:
+                _log.error("not rendered: %s", failure)
         if args.aggregates_only:
             import pandas as pd
 
@@ -174,7 +177,8 @@ def main(argv: list[str] | None = None) -> int:
             pruned = hub_sync.upload(os.environ["HF_TOKEN"])
             _log.info("published to %s, %d superseded files pruned", hub_sync.PRECOMPUTE_HF_REPO, pruned)
         _log.info("done in %.0f s", time.time() - started)
-    return 0
+    # After any upload: what did render is kept, and the job still fails.
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

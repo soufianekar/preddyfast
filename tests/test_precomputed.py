@@ -101,6 +101,12 @@ def test_anything_else_is_rendered_live(monkeypatch, change):
     assert pc.preset_animation(**{**ARGS, **change}, base_url="/") is None
 
 
+def test_a_horizon_past_the_preset_is_rendered_live(monkeypatch):
+    # The preset reaches T+96: a T+120 request must not be served a shorter loop.
+    _served(monkeypatch)
+    assert pc.preset_animation(**{**ARGS, "horizon_hours": 120}, base_url="/") is None
+
+
 def test_stale_preset_is_not_served(monkeypatch):
     _served(monkeypatch, init=INIT - pd.Timedelta("1D"))
     assert pc.preset_animation(**ARGS, base_url="/") is None
@@ -211,6 +217,7 @@ def test_preset_fields_round_trip_and_cover_a_sub_area(_dir, monkeypatch):
     dict(bounds=(30.0, 50.0, 5.0, 10.0)),     # leaves the preset region
     dict(statistic="percentile"),              # a statistic not precomputed
     dict(step=12), dict(accum=24),
+    dict(horizon=96),                          # past the preset's last lead
 ])
 def test_anything_the_preset_does_not_hold_reads_the_archive(_dir, monkeypatch, change):
     test_preset_fields_round_trip_and_cover_a_sub_area(_dir, monkeypatch)
@@ -272,3 +279,22 @@ def test_refresh_reads_under_the_batch_budget_not_the_interactive_one(monkeypatc
     pc.refresh_store("ifs_ens", pc.load_manifest())
     # IFS ENS over the N Atlantic to T+360 is ~960 MB; the interactive limit is 400.
     assert budgets == [pc.PRECOMPUTE_READ_BUDGET_MB] and pc.PRECOMPUTE_READ_BUDGET_MB >= 1000
+
+
+def test_refresh_reports_every_preset_it_could_not_render(monkeypatch, _dir):
+    from utils.earthmover_api import GridDataError
+
+    def animation(*a, **k):
+        if a[12] == ("gefs",):
+            raise GridDataError("over budget")
+        return _animation()
+
+    monkeypatch.setattr(pc, "forecast_animation", animation)
+    monkeypatch.setattr(pc, "current_init", lambda stores, run: None if stores == ("aifs_ens",) else INIT)
+    monkeypatch.setattr(pc, "store_variables", lambda store: ["temperature_2m"])
+    monkeypatch.setattr(pc, "PRECOMPUTE_REGIONS", ("ecmwf_europe",))
+    monkeypatch.setattr(pc, "PRECOMPUTE_VARIABLES", {"temperature_2m": None})
+    failures = []
+    written = pc.refresh(("ifs_ens", "gefs", "aifs_ens"), pc.load_manifest(), failures=failures)
+    assert written == 1
+    assert sorted(f.split(":")[0] for f in failures) == ["aifs_ens", "gefs ecmwf_europe temperature_2m mean"]
