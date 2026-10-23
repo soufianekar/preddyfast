@@ -91,6 +91,15 @@ The scorecard fills its 14-day window newest init first; to fill it from
 scratch, run `--no-animations --scorecard --backfill --max-minutes 300` until a
 run writes nothing new (the workflow's `backfill` input does the same).
 
+## Globe page (web/)
+
+`web/` is a static globe page with no server: plain HTML, CSS and ES modules
+that read the published Dataset (`DATA_URL` in `web/js/config.js`). Serve it
+locally with `python -m http.server -d web 8000`. `web/data/` (palettes,
+themes, coastlines) is generated from `settings.py`; rebuild it with
+`python scripts/build_web_data.py`. Deployment is the manual `web` workflow
+(GitHub Pages); it publishes the site, so run it only deliberately.
+
 ## Deploying your own copy
 
 1. Create a public HF **Dataset** (e.g. `<hf-user>/preddyfast-data`) and a
